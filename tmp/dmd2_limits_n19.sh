@@ -1,0 +1,1 @@
+for p in /sys/fs/cgroup/user.slice /sys/fs/cgroup/user.slice/user-1009.slice /sys/fs/cgroup/user.slice/user-1009.slice/session-306536.scope; do echo "$p"; cat "$p/memory.max" "$p/memory.high" "$p/memory.current" "$p/memory.events" 2>/dev/null; done

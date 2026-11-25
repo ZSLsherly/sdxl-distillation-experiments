@@ -1,0 +1,9 @@
+set -eu
+. /root/sdxl_research/env.sh
+export CUDA_VISIBLE_DEVICES=''
+export PYTHONPATH="$SDXL_ROOT/code/sdxl_research"
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+python "$SDXL_ROOT/tmp/a800_overnight_audit.py" uniform_control
+python "$SDXL_ROOT/tmp/a800_check_final_cpu.py" uniform_control
+

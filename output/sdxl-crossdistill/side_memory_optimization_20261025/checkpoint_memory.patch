@@ -1,0 +1,52 @@
+--- a/sdxl_research/training_state.py
++++ b/sdxl_research/training_state.py
+@@ -12,14 +12,26 @@
+     return t.to_local() if isinstance(t, DTensor) else t
+ 
+ 
+-def cpu_state(model):
+-    return {k: local(v).detach().cpu().clone() for k, v in model.state_dict().items()}
++def _cpu_tensor(value, snapshot):
++    tensor = local(value).detach()
++    if snapshot:
++        # One independent CPU copy, including when the input already lives on CPU.
++        return tensor.to(device="cpu", copy=True)
++    tensor = tensor.cpu()
++    # Do not serialize a large backing allocation for a small/padded shard view.
++    if tensor.storage_offset() or tensor.untyped_storage().nbytes() != tensor.numel() * tensor.element_size():
++        tensor = tensor.clone()
++    return tensor
+ 
+ 
+-def optimizer_state(optimizer):
++def cpu_state(model, *, snapshot=True):
++    return {k: _cpu_tensor(v, snapshot) for k, v in model.state_dict().items()}
++
++
++def optimizer_state(optimizer, *, snapshot=True):
+     state = optimizer.state_dict()
+     return {**state, "state": {
+-        k: {name: local(v).detach().cpu().clone() if torch.is_tensor(v) else v
++        k: {name: _cpu_tensor(v, snapshot) if torch.is_tensor(v) else v
+             for name, v in values.items()} for k, values in state["state"].items()}}
+ 
+ 
+@@ -44,13 +56,15 @@
+     if rank == 0:
+         path.mkdir(parents=True, exist_ok=False)
+     dist.barrier()
+-    # Store model/optimizer separately to avoid holding both full CPU copies at once.
++    # This save is synchronous and training is quiescent. Reuse compact CPU
++    # tensors while serializing; callers requesting snapshots still get copies.
++    # Keep model/optimizer files separate to bound required GPU-to-CPU staging.
+     for name, model in models.items():
+         if model is not None:
+-            torch.save(cpu_state(model), path / f"{name}_rank{rank}.pt")
++            torch.save(cpu_state(model, snapshot=False), path / f"{name}_rank{rank}.pt")
+     for name, optimizer in optimizers.items():
+         if optimizer is not None:
+-            torch.save(optimizer_state(optimizer), path / f"optimizer_{name}_rank{rank}.pt")
++            torch.save(optimizer_state(optimizer, snapshot=False), path / f"optimizer_{name}_rank{rank}.pt")
+     torch.save({"progress": progress, "python_rng": random.getstate(),
+                 "cpu_rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state()},
+                path / f"rng_rank{rank}.pt")

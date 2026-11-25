@@ -1,0 +1,81 @@
+--- baseline/train.py
++++ uniform4/train.py
+@@ -163,11 +163,12 @@
+     of = torch.optim.AdamW(fake.parameters(), lr=args.fake_lr, betas=(.9, .999), weight_decay=.01, foreach=False)
+     od = torch.optim.AdamW(disc.trainable(), lr=args.d_lr, betas=(0, .99), weight_decay=0, foreach=False) if disc is not None else None
+     scheduler = VPSchedule(DDIMScheduler.from_pretrained(base, subfolder="scheduler", local_files_only=True).alphas_cumprod.to(device))
+-    knots = [999, 919, 499, 199, -1]
++    knots = [999, 749, 499, 249, -1]
+     config = {**vars(args), "root": str(args.root), "data_dir": str(data_dir), "world_size": world, "effective_batch": plan.global_batch,
+               "accumulation": plan.accumulation, "microbatch_per_gpu": plan.micro_batch,
+               "requested_training_batch": requested.global_batch, "schedule": knots,
+               "student_cfg": 1, "train_count": data["train_count"],
++              "student_dmd_t_range": [20, knots[1]], "pcm_t_range": [knots[1] + 21, 999],
+               "initialization": f"full training state from {args.resume}" if args.resume else "untouched SDXL Base; independent student/fake/D per run",
+               "checkpoint_kind": "periodic BF16 student weights; final FP32 student/fake/D + optimizers/counters/RNG",
+               "spectral_norm_policy": "20 initialization iterations; one refresh per D optimizer step, fixed across microbatches",
+@@ -246,7 +247,7 @@
+         indices = [order[pos % len(order)] for pos in positions]
+         condition = conditions(data, indices, device)
+         real = data["latents"].index_select(0, torch.tensor(indices)).to(device, dtype=torch.float32)
+-        randoms = random_inputs(positions, phase, device, seed=args.seed)
++        randoms = random_inputs(positions, phase, device, seed=args.seed, boundary=knots[1])
+         return indices, condition, real, randoms
+ 
+     def generate_fake_batch(update):
+@@ -256,7 +257,7 @@
+         positions = plan.rank_positions(update, rank)
+         indices = [order[pos % len(order)] for pos in positions]
+         condition = conditions(data, indices, device)
+-        randoms = random_inputs(positions, "fake", device, seed=args.seed)
++        randoms = random_inputs(positions, "fake", device, seed=args.seed, boundary=knots[1])
+         generated = rollout_chunks(rollout, condition, randoms["noise"], args.rollout_batch)
+         # Initial rollout noise is not needed once all final latents are cached.
+         del randoms["noise"]
+@@ -516,8 +517,8 @@
+                     for k in range(2):
+                         tk = th - k * 10
+                         xk = scheduler.jump(xk, guided(xk, tk, condition), tk, tk - 10)
+-                    target = scheduler.jump(xk, predict(student, xk, th - 20, condition), th - 20, 919)
+-                boundary = scheduler.jump(xh, predict(student, xh, th, condition), th, 919)
++                    target = scheduler.jump(xk, predict(student, xk, th - 20, condition), th - 20, knots[1])
++                boundary = scheduler.jump(xh, predict(student, xh, th, condition), th, knots[1])
+                 pcm = (boundary - target).square().mean()
+                 (10 * pcm / plan.accumulation).backward()
+                 stats.append(torch.stack([dmd_value, gan_value, pcm.detach()]))
+--- baseline/batching.py
++++ uniform4/batching.py
+@@ -44,7 +44,7 @@
+     return result
+ 
+ 
+-def random_inputs(positions, phase, device, seed=20261017, shape=(4, 128, 128)):
++def random_inputs(positions, phase, device, seed=20261017, shape=(4, 128, 128), boundary=919):
+     """Sampling is independent of packing, rank timing, and GAN/DMD branch choice.
+ 
+     The small per-image RNG loop never calls a neural network. All model calls
+@@ -59,11 +59,11 @@
+         generator = torch.Generator(device=device).manual_seed(seed + offset + pos)
+         randn = lambda: torch.randn(shape, device=device, generator=generator)
+         values["noise"].append(randn())
+-        lo, hi = (0, 1000) if phase == "fake" else (20, 920)
++        lo, hi = (0, 1000) if phase == "fake" else (20, boundary + 1)
+         values["t"].append(torch.randint(lo, hi, (), device=device, generator=generator))
+         values["eps"].append(randn())
+         if phase == "student":
+-            values["pcm_t"].append(torch.randint(940, 1000, (), device=device, generator=generator))
++            values["pcm_t"].append(torch.randint(boundary + 21, 1000, (), device=device, generator=generator))
+             values["pcm_eps"].append(randn())
+         spatial = random.Random(seed + offset + pos + 900000)
+         crops.append((spatial.randrange(shape[-2] - 48 + 1), spatial.randrange(shape[-1] - 48 + 1)))
+--- baseline/training_state.py
++++ uniform4/training_state.py
+@@ -69,7 +69,7 @@
+     metadata = json.loads((path / "complete.json").read_text())
+     if metadata["world_size"] != dist.get_world_size():
+         raise ValueError("Resume requires the saved world size")
+-    keys = ("variant", "batch", "micro_batch", "rollout_batch", "seed", "data_dir",
++    keys = ("schedule", "variant", "batch", "micro_batch", "rollout_batch", "seed", "data_dir",
+             "fake_updates", "student_lr", "fake_lr", "d_lr", "gan_weight", "teacher_cfg",
+             "shard_granularity", "fake_offload", "offload_student", "offload_student_optimizer")
+     for key in keys:

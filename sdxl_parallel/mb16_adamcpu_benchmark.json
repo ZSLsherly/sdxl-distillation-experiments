@@ -1,0 +1,33 @@
+{
+  "status": "complete",
+  "timestamp": "20261017T232219+0800",
+  "student_updates": 3,
+  "fake_updates": 3,
+  "D_updates": 3,
+  "effective_batch": 64,
+  "microbatch_per_gpu": 16,
+  "accumulation": 2,
+  "peak_allocated_GiB": 32.33894348144531,
+  "profile_rank0_seconds": {
+    "fake_student_rollout": 32.105884343385696,
+    "D_decode": 4.8020827658474445,
+    "D_forward_backward": 1.3823337219655514,
+    "fake_forward_backward": 45.45554331317544,
+    "D_optimizer": 0.08875513821840286,
+    "fake_optimizer": 26.592552609741688,
+    "G_rollout": 31.429788783192635,
+    "G_low_objective_backward": 52.28117296844721,
+    "G_PCM_backward": 61.00481531023979,
+    "G_optimizer": 22.689828153699636
+  },
+  "benchmark": true,
+  "warmup_cycles": 1,
+  "measured_cycles": 2,
+  "cycle_seconds": [
+    95.53621673583984,
+    90.50103759765625,
+    93.04623413085938
+  ],
+  "student_samples_per_second": 0.6973680338290428,
+  "note": "Fixed-size throughput probe with fake:G=1:1; not a formal batch64/5:1 training run"
+}

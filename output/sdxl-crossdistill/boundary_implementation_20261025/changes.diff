@@ -1,0 +1,591 @@
+--- before/batching.py
++++ sdxl_research/batching.py
+@@ -45,7 +45,7 @@
+ 
+ 
+ def random_inputs(positions, phase, device, seed=20261017, shape=(4, 128, 128),
+-                  pcm_boundary=919, dmd_t_max=919):
++                  pcm_boundary=919, dmd_t_max=919, time_range=None):
+     """Sampling is independent of packing, rank timing, and GAN/DMD branch choice.
+ 
+     The small per-image RNG loop never calls a neural network. All model calls
+@@ -61,6 +61,8 @@
+         randn = lambda: torch.randn(shape, device=device, generator=generator)
+         values["noise"].append(randn())
+         lo, hi = (0, 1000) if phase == "fake" else (20, dmd_t_max + 1)
++        if time_range is not None:
++            lo, hi = time_range[0], time_range[1] + 1
+         values["t"].append(torch.randint(lo, hi, (), device=device, generator=generator))
+         values["eps"].append(randn())
+         if phase == "student":
+--- before/image_views.py
++++ sdxl_research/image_views.py
+@@ -7,6 +7,12 @@
+ def decode_view(vae, latents, crops, kind='tile', grad=False, chunk_size=None):
+     if kind=='tile':
+         return decode_tiles(vae,latents,crops,grad=grad,chunk_size=chunk_size)
++    if kind=='whole':
++        def decode(z):
++            return vae.decode(z.float()/vae.config.scaling_factor,return_dict=False)[0]
++        # Each full image is checkpointed independently; no latent cropping.
++        return torch.cat([checkpoint(decode,z,use_reentrant=False) if grad else decode(z)
++                          for z in latents.split(chunk_size or 1)])
+     if kind!='full':
+         raise ValueError(f'Unknown GAN view: {kind}')
+     # Full FP32 images, one at a time. Take the same spatial rectangle as tile
+--- before/train.py
++++ sdxl_research/train.py
+@@ -33,7 +33,9 @@
+ from gan_losses import discriminator_loss, generator_loss
+ from image_views import decode_view, augment_view
+ from pixel import PixelDiscriminator
+-from training_state import save_training, load_training
++from sam_pixel import SAMDiscriminator
++import boundary as boundary_dm
++from training_state import save_training, load_training, load_student_init
+ from runtime import average_gradients, TraceWindow, schedule_settings
+ 
+ 
+@@ -56,6 +58,15 @@
+     parser.add_argument("--root", type=Path, default=Path("/data5/shenglin.zeng/sdxl_crossdistill"))
+     parser.add_argument("--run", required=True)
+     parser.add_argument("--resume", help="Completed final training-state directory; same GPU count and settings")
++    parser.add_argument("--init-student", type=Path, help="Student only from a completed state; fake/D/optimizers start fresh")
++    parser.add_argument("--objective", choices=('clean','boundary'), default='clean')
++    parser.add_argument("--boundary-margin", type=int, default=10)
++    parser.add_argument("--fake-weight-max", type=float, default=10.)
++    parser.add_argument("--grad-clip", type=float, help="Default 1 for boundary, 10 for legacy clean")
++    parser.add_argument("--sam-path", type=Path, default=Path('models/sam-vit-base'))
++    parser.add_argument("--gan-ramp-updates", type=int, default=0)
++    parser.add_argument("--calibrate-only", type=int, default=0,
++                        help="Boundary: probe N microbatches from a trained resume state; no optimizer updates")
+     parser.add_argument("--resume-repack", action="store_true", help="Explicitly allow changing micro/rollout batch on resume; global batch and world size must stay fixed")
+     parser.add_argument("--data-dir", type=Path, default=Path("datasets/parallel_10k_seed20261018"),
+                         help="Prepared dataset directory, absolute or relative to root")
+@@ -65,8 +76,8 @@
+     parser.add_argument("--gan-stages", type=int, nargs='*', help="Override variant GAN stages; empty disables GAN")
+     parser.add_argument("--fake-policy", choices=('crossdistill','student_cycle','match_student','final'), default='crossdistill')
+     parser.add_argument("--gan-loss", choices=('hinge','logistic'), default='hinge')
+-    parser.add_argument("--discriminator", choices=('hybrid','rgb'), default='hybrid')
+-    parser.add_argument("--gan-view", choices=('tile','full'), default='tile', help="Full FP32 decoding is memory-intensive")
++    parser.add_argument("--discriminator", choices=('hybrid','rgb','sam'), default='hybrid')
++    parser.add_argument("--gan-view", choices=('tile','full','whole'), default='tile', help="full=crop after full decode; whole=uncropped image")
+     parser.add_argument("--gan-augment", choices=('d_only','both','none'), default='d_only')
+     parser.add_argument("--schedule", type=int, nargs=4, default=[999,919,499,199])
+     parser.add_argument("--pcm-boundary", type=int, help="Default: second sampling point")
+@@ -115,6 +126,27 @@
+     parser.add_argument("--benchmark-batch", type=int, default=64,
+                         help="Fixed global probe batch, so different micro/rollout batches process equal work")
+     args = parser.parse_args()
++    if args.resume and args.init_student:
++        parser.error('Choose resume OR student-only initialization')
++    if args.calibrate_only < 0 or (args.calibrate_only and (not args.resume or args.objective!='boundary')):
++        parser.error('Calibration requires a boundary resume state and positive microbatch count')
++    if args.objective=='clean' and args.gan_ramp_updates:
++        parser.error('GAN ramp is currently supported only by the boundary recipe')
++    if args.grad_clip is None:
++        args.grad_clip = 1. if args.objective=='boundary' else 10.
++    if args.grad_clip <= 0 or args.fake_weight_max <= 0 or args.gan_weight < 0 or args.gan_ramp_updates < 0:
++        parser.error('Invalid gradient/loss setting')
++    if args.objective=='boundary':
++        if args.variant not in ('joint4','dmd_only') or args.student_stages != [2,3,4] or args.dmd_stages is not None or args.gan_stages is not None or args.fake_policy!='crossdistill':
++            parser.error('Boundary recipe has fixed middle+terminal routing; use joint4 or dmd_only without stage overrides')
++        if args.variant=='joint4' and (args.discriminator,args.gan_view,args.gan_augment)!=('sam','whole','none'):
++            parser.error('Boundary joint4 expects SAM, whole-image decode, no augmentation')
++        try:
++            boundary_dm.phase_ranges([*args.schedule,-1],args.boundary_margin)
++        except ValueError as error:
++            parser.error(str(error))
++        if args.pcm_boundary not in (None,args.schedule[1]):
++            parser.error('Boundary PCM relay must equal the second sampling knot')
+     if args.resume_repack and not args.resume:
+         parser.error('--resume-repack requires --resume')
+     if args.offload_student and args.offload_student_optimizer:
+@@ -145,6 +177,7 @@
+ 
+ def main():
+     args = arguments()
++    boundary_mode = args.objective == 'boundary'
+     stage_plan = make_stage_plan(args.variant,args.student_stages,args.dmd_stages,args.gan_stages,args.fake_policy)
+     rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
+     gpu = int(os.environ["LOCAL_RANK"])
+@@ -189,6 +222,8 @@
+ 
+     print("LOAD", rank, "micro_batch", plan.micro_batch, "accumulation", plan.accumulation, flush=True)
+     student = load_model(True, args.offload_student)
++    if args.init_student:
++        load_student_init(args.init_student, student, args.shard_granularity)
+     fake = load_model(True, args.fake_offload)
+     teacher = load_model(False)
+     vae = AutoencoderKL.from_pretrained(base, subfolder="vae", variant="fp16", torch_dtype=torch.float32,
+@@ -199,16 +234,22 @@
+     torch.manual_seed(args.seed + 7000)
+     disc = None
+     if stage_plan.gan:
+-        disc = PixelDiscriminator(args.root / "models/dinov2-small", kind=args.discriminator).to(device)
++        sam_path = args.sam_path if args.sam_path.is_absolute() else args.root / args.sam_path
++        disc = (SAMDiscriminator(sam_path) if args.discriminator=='sam' else
++                PixelDiscriminator(args.root / "models/dinov2-small", kind=args.discriminator)).to(device)
+         disc.set_heads(False)
+-    og = torch.optim.AdamW(student.parameters(), lr=args.student_lr, betas=(.9, .999), weight_decay=.01, foreach=args.student_adam_foreach)
+-    of = torch.optim.AdamW(fake.parameters(), lr=args.fake_lr, betas=(.9, .999), weight_decay=.01, foreach=args.fake_adam_foreach)
++    adam = dict(betas=(0., .999), weight_decay=0.) if boundary_mode else dict(betas=(.9,.999),weight_decay=.01)
++    og = torch.optim.AdamW(student.parameters(), lr=args.student_lr, **adam, foreach=args.student_adam_foreach)
++    of = torch.optim.AdamW(fake.parameters(), lr=args.fake_lr, **adam, foreach=args.fake_adam_foreach)
+     od = torch.optim.AdamW(disc.trainable(), lr=args.d_lr, betas=(0, .99), weight_decay=0, foreach=False) if disc is not None else None
+     scheduler = VPSchedule(DDIMScheduler.from_pretrained(base, subfolder="scheduler", local_files_only=True).alphas_cumprod.to(device))
+     knots, pcm_boundary, dmd_t_max = schedule_settings(args.schedule, args.dmd_t_max, args.pcm_boundary)
++    ranges = boundary_dm.phase_ranges(knots,args.boundary_margin) if boundary_mode else None
++    latent_shape = tuple(data['latents'].shape[1:])
+     if args.compile_teacher:
+         teacher.forward = torch.compile(teacher.forward, mode="default", fullgraph=False)
+-    config = {**vars(args), "root": str(args.root), "data_dir": str(data_dir), "world_size": world, "effective_batch": plan.global_batch,
++    config = {**vars(args), "root": str(args.root), "data_dir": str(data_dir), "sam_path":str(args.sam_path),
++              "init_student":str(args.init_student) if args.init_student else None, "world_size": world, "effective_batch": plan.global_batch,
+               "accumulation": plan.accumulation, "microbatch_per_gpu": plan.micro_batch,
+               "requested_training_batch": requested.global_batch, "schedule": knots,
+               "pcm_boundary": pcm_boundary, "dmd_t_max": dmd_t_max,
+@@ -230,6 +271,22 @@
+               "D_fake_stage": 4 if disc is not None else None,
+               "discriminator_enabled": disc is not None,
+               "benchmark_protocol": "same fake:G ratio and configured student stages as training; excludes evaluation/checkpoint IO; warmup recorded separately" if args.benchmark else None}
++    if args.init_student:
++        config['initialization'] = f'student only from {args.init_student}; fresh teacher-initialized fake and fresh D/optimizers'
++    if boundary_mode:
++        config.update(fake_stage_policy='boundary_2_3_4_v1', student_dmd_t_range=ranges,
++                      D_updates_per_G=1 if disc is not None else 0,
++                      latent_shape=latent_shape, optimizer_settings=adam,
++                      spectral_norm_policy='not used by SAM heads',
++                      augmentation='whole-image SAM; no flips or latent crops')
++        config['experiment_modules'] = dict(objective='boundary_v1', margin=args.boundary_margin,
++            ranges={str(k):list(v) for k,v in ranges.items()}, fake_weight_max=args.fake_weight_max, grad_clip=args.grad_clip,
++            student='random middle 2/3 plus terminal4 each G', fake='cycle 2/3/4',
++            terminal_dmd=True, gan=bool(disc is not None), discriminator=args.discriminator,
++            gan_view=args.gan_view, gan_loss=args.gan_loss, gan_augment=args.gan_augment,
++            gan_ramp_updates=args.gan_ramp_updates, sam_path=str(args.sam_path),
++            fake_normalization='conditional epsilon; clipped inverse variance',
++            student_normalization='boundary posterior mean; 0.5 MSE')
+     if rank == 0:
+         write_json(out / "config.json", config)
+         write_json(out / "data_manifest.json", manifest)
+@@ -237,7 +294,7 @@
+         source.mkdir(exist_ok=True)
+         hashes = {}
+         for name in ("train.py", "batching.py", "pixel.py", "objectives.py", "training_state.py", "runtime.py",
+-                     "stage_policy.py", "gan_losses.py", "image_views.py"):
++                     "stage_policy.py", "gan_losses.py", "image_views.py", "boundary.py", "sam_pixel.py"):
+             file = Path(__file__).with_name(name)
+             shutil.copyfile(file, source / name)
+             hashes[name] = hashlib.sha256(file.read_bytes()).hexdigest()
+@@ -296,13 +353,14 @@
+                 x = x.detach()
+         return x
+ 
+-    def training_batch(update, micro, phase):
++    def training_batch(update, micro, phase, score_stage=None):
+         positions = plan.positions(update, micro, rank)
+         indices = [order[pos % len(order)] for pos in positions]
+         condition = conditions(data, indices, device)
+         real = data["latents"].index_select(0, torch.tensor(indices)).to(device, dtype=torch.float32)
+         randoms = random_inputs(positions, phase, device, seed=args.seed,
+-                               pcm_boundary=pcm_boundary, dmd_t_max=dmd_t_max)
++                               pcm_boundary=pcm_boundary, dmd_t_max=dmd_t_max, shape=latent_shape,
++                               time_range=ranges[score_stage] if boundary_mode else None)
+         return indices, condition, real, randoms
+ 
+     def generate_fake_batch(update):
+@@ -312,9 +370,14 @@
+         positions = plan.rank_positions(update, rank)
+         indices = [order[pos % len(order)] for pos in positions]
+         condition = conditions(data, indices, device)
+-        randoms = random_inputs(positions, "fake", device, seed=args.seed)
+-        score_stage = stage_plan.critic_stage(update, gcount)
+-        if disc is None:
++        score_stage = boundary_dm.critic_stage(update) if boundary_mode else stage_plan.critic_stage(update, gcount)
++        randoms = random_inputs(positions, "fake", device, seed=args.seed, shape=latent_shape,
++                               time_range=ranges[score_stage] if boundary_mode else None)
++        if boundary_mode:
++            generated, final = rollout_chunks(lambda c,n: boundary_dm.rollout_boundary_and_final(
++                lambda x,t,c:predict(student,x,t,c),scheduler,c,n,knots,score_stage),
++                condition,randoms['noise'],args.rollout_batch)
++        elif disc is None:
+             generated = rollout_chunks(lambda c, n: rollout(c, n, score_stage),
+                                        condition, randoms["noise"], args.rollout_batch)
+             final = None
+@@ -328,7 +391,7 @@
+         real = data["latents"].index_select(0, torch.tensor(indices)).to(device, dtype=torch.float32)
+         return indices, condition, real, randoms, generated, final
+ 
+-    def clip_sharded(model):
++    def clip_sharded(model, clip=True):
+         gradients = [local(p.grad) for p in model.parameters() if p.grad is not None]
+         if not gradients:
+             raise RuntimeError("Expected gradients")
+@@ -340,8 +403,32 @@
+         norm = total.sqrt().item()
+         if not math.isfinite(norm):
+             raise FloatingPointError(f"Non-finite gradient norm: {norm}")
+-        torch._foreach_mul_(gradients, min(1., 10. / (norm + 1e-12)))
++        if clip:
++            torch._foreach_mul_(gradients, min(1., args.grad_clip / (norm + 1e-12)))
+         return norm
++
++    def pcm_loss(real, rnd, condition):
++        th = rnd['pcm_t']
++        xh = scheduler.noise(real,rnd['pcm_eps'],th)
++        with torch.no_grad():
++            xk = xh
++            for k in range(2):
++                tk = th-k*10
++                xk = scheduler.jump(xk,guided(xk,tk,condition),tk,tk-10)
++            target = scheduler.jump(xk,predict(student,xk,th-20,condition),th-20,pcm_boundary)
++        prediction = scheduler.jump(xh,predict(student,xh,th,condition),th,pcm_boundary)
++        return (prediction-target).square().mean()
++
++    def boundary_loss(generated, k, rnd, condition):
++        with torch.no_grad():
++            xt = boundary_dm.renoise(scheduler,generated.detach(),knots[k],rnd['t'],rnd['eps'])
++            ef = predict(fake,xt,rnd['t'],condition)
++            et = guided(xt,rnd['t'],condition)
++        return boundary_dm.dm_surrogate(scheduler,generated,knots[k],rnd['t'],xt,ef,et)[0]
++
++    def phase_random(update, micro, k):
++        return random_inputs(plan.positions(update,micro,rank),'student',device,
++            seed=args.seed+1000*k,shape=latent_shape,pcm_boundary=pcm_boundary,time_range=ranges[k])
+ 
+     def average_disc_gradients():
+         # D is replicated. The only reduction is at the optimizer boundary.
+@@ -434,7 +521,7 @@
+         for offset in range(0, len(cases), plan.micro_batch):
+             selected = cases[offset:offset + plan.micro_batch]
+             c = conditions(data, [i for _, i in selected], device)
+-            noise = torch.stack([torch.randn((4, 128, 128), device=device,
++            noise = torch.stack([torch.randn(latent_shape, device=device,
+                                 generator=torch.Generator(device=device).manual_seed(102)) for _ in selected])
+             generated = rollout(c, noise)
+             if not torch.isfinite(generated).all():
+@@ -456,12 +543,57 @@
+                     pair = torch.cat([real, x])
+                     tile = decode_view(vae, pair, [(40, 40)] * 2, kind=args.gan_view)
+                     parts = disc(tile, c["pooled_prompt_embeds"][j:j + 1].expand(2, -1), return_parts=True)
+-                    row["D_real_fake"] = {key: parts[key].tolist() for key in ("total", "dino", "rgb")}
++                    keys = ('total','features') if args.discriminator=='sam' else ('total','dino','rgb')
++                    row["D_real_fake"] = {key: parts[key].tolist() for key in keys}
+                 rows.append(row)
+         write_json(dest / f"rank{rank}.json", {"student_updates": gcount,
+                    "student_samples": gcount * plan.global_batch, "samples": rows})
+         dist.barrier()
+         print("EVALUATED", rank, gcount, flush=True)
++
++    if args.calibrate_only:
++        if disc is None or dcount == 0:
++            raise ValueError('GAN calibration needs an already trained discriminator')
++        probes = []
++        for i in range(args.calibrate_only):
++            update = gcount+i
++            mid = boundary_dm.middle_stage(update,args.seed)
++            _,condition,real,rnd = training_batch(update,0,'student',mid)
++            og.zero_grad(set_to_none=True)
++            for k,y in boundary_dm.local_rollout(lambda x,t,c:predict(student,x,t,c),
++                    scheduler,condition,rnd['noise'],knots,mid):
++                boundary_loss(y,k,phase_random(update,0,k),condition).backward()
++            dm_norm = clip_sharded(student,clip=False)
++            og.zero_grad(set_to_none=True)
++            pcm_loss(real,rnd,condition).backward()
++            pcm_norm = clip_sharded(student,clip=False)
++            og.zero_grad(set_to_none=True)
++            y=rollout(condition,rnd['noise'],4,True)
++            terminal=boundary_loss(y,4,phase_random(update,0,4),condition)
++            terminal.backward()
++            terminal_norm=clip_sharded(student,clip=False)
++            og.zero_grad(set_to_none=True)
++            # Recompute final call, not retain multiple full-network graphs.
++            y=rollout(condition,rnd['noise'],4,True)
++            rgb=decode_view(vae,y,rnd['crops'],kind='whole',grad=True,chunk_size=args.vae_batch)
++            generator_loss(disc(rgb,condition['pooled_prompt_embeds']),args.gan_loss).backward()
++            gan_norm=clip_sharded(student,clip=False)
++            og.zero_grad(set_to_none=True)
++            if min(dm_norm,pcm_norm,terminal_norm,gan_norm) < 1e-10:
++                raise ValueError('Near-zero calibration gradient; inspect critic and samples before selecting weights')
++            probes.append(dict(dm=dm_norm,pcm=pcm_norm,terminal=terminal_norm,gan=gan_norm))
++            del y,rgb,terminal,real,rnd,condition
++        if rank==0:
++            import statistics
++            write_json(out/'calibration.json',dict(source=args.resume,G_updates=0,D_updates=0,
++                batch_per_probe=plan.micro_batch*world,probes=probes,
++                suggested_pcm_weight=statistics.median(p['dm']/p['pcm'] for p in probes),
++                suggested_gan_weight=.2*statistics.median(p['terminal']/p['gan'] for p in probes),
++                note='Parameter-gradient ratios; suggestions only, not applied automatically'))
++        log.close()
++        dist.barrier()
++        dist.destroy_process_group()
++        return
+ 
+     if not args.benchmark and not args.resume:
+         evaluate("initial")
+@@ -474,12 +606,13 @@
+             break
+         torch.cuda.synchronize()
+         cycle_start = time.monotonic()
+-        stage = stage_plan.student_stage(gcount)
++        stage = boundary_dm.middle_stage(gcount,args.seed) if boundary_mode else stage_plan.student_stage(gcount)
+         repeats = args.fake_updates
+-        for _ in range(repeats):
++        for fake_repeat in range(repeats):
+             tick = time.monotonic()
+             of.zero_grad(set_to_none=True)
+-            if disc is not None:
++            train_d = disc is not None and (not boundary_mode or fake_repeat==repeats-1)
++            if train_d:
+                 od.zero_grad(set_to_none=True)
+                 disc.set_heads(True)
+             stats, originals = [], []
+@@ -494,25 +627,33 @@
+                 generated = cached_generated[begin:end]
+                 originals.extend(data["original_indices"][i] for i in indices)
+                 dvalues = torch.empty(0, device=device)
+-                if disc is not None:
++                if train_d:
+                     with measure("D_decode"), torch.no_grad():
+                         real_rgb = augment_view(decode_view(vae, real, rnd["crops"], kind=args.gan_view), rnd["flips"], 'D', args.gan_augment)
+                         fake_rgb = augment_view(decode_view(vae, cached_final[begin:end], rnd["crops"], kind=args.gan_view), rnd["flips"], 'D', args.gan_augment)
+                     with measure("D_forward_backward"):
+-                        r1_on = dcount % 16 == 15
+-                        real_rgb.requires_grad_(r1_on)
+-                        pr = disc(real_rgb, condition["pooled_prompt_embeds"], return_parts=True)
++                        r1_on = args.discriminator=='sam' or dcount % 16 == 15
++                        real_rgb.requires_grad_(r1_on and args.discriminator!='sam')
++                        extra = {'feature_r1':True} if args.discriminator=='sam' else {}
++                        pr = disc(real_rgb, condition["pooled_prompt_embeds"], return_parts=True, **extra)
+                         pf = disc(fake_rgb, condition["pooled_prompt_embeds"], return_parts=True)
+                         hinge = discriminator_loss(pr["total"], pf["total"], args.gan_loss)
+-                        r1 = r1_penalty(pr["total"], real_rgb) if r1_on else torch.zeros((), device=device)
+-                        dloss = hinge + .05 * 16 * r1
++                        r1 = pr['r1'] if args.discriminator=='sam' else (r1_penalty(pr["total"], real_rgb) if r1_on else torch.zeros((), device=device))
++                        dloss = hinge + (1e-5 if args.discriminator=='sam' else .05*16) * r1
++                        feature_key = 'features' if args.discriminator=='sam' else 'dino'
+                         dvalues = torch.stack([hinge, r1, pr["total"].mean(), pf["total"].mean(),
+-                                              pr["dino"].mean(), pf["dino"].mean(), pr["rgb"].mean(), pf["rgb"].mean()]).detach()
++                                              pr[feature_key].mean(), pf[feature_key].mean(), pr["rgb"].mean(), pf["rgb"].mean()]).detach()
+                         (dloss / plan.accumulation).backward()
+                         del real_rgb, fake_rgb, pr, pf, hinge, r1, dloss
+                 with measure("fake_forward_backward"):
+-                    xt = scheduler.noise(generated, rnd["eps"], rnd["t"])
+-                    floss = (predict(fake, xt, rnd["t"], condition) - rnd["eps"]).square().mean()
++                    if boundary_mode:
++                        s = knots[boundary_dm.critic_stage(fcount)]
++                        xt = boundary_dm.renoise(scheduler,generated.detach(),s,rnd['t'],rnd['eps'])
++                        floss = boundary_dm.fake_loss(scheduler,generated,s,rnd['t'],rnd['eps'],
++                                  predict(fake,xt,rnd['t'],condition),args.fake_weight_max)
++                    else:
++                        xt = scheduler.noise(generated, rnd["eps"], rnd["t"])
++                        floss = (predict(fake, xt, rnd["t"], condition) - rnd["eps"]).square().mean()
+                     (floss / plan.accumulation).backward()
+                     stats.append(torch.cat([floss.detach().reshape(1), dvalues]))
+                     del xt, floss, generated, real, rnd, condition, dvalues
+@@ -522,7 +663,7 @@
+             del cached_indices, cached_condition, cached_real, cached_randoms, cached_generated, cached_final
+             if stopped:
+                 break
+-            if disc is not None:
++            if train_d:
+                 with measure("D_optimizer"):
+                     d_collectives = average_disc_gradients()
+                     dnorm = torch.nn.utils.clip_grad_norm_(disc.trainable(), 10, error_if_nonfinite=True).item()
+@@ -534,71 +675,99 @@
+                 of.step()
+                 of.zero_grad(set_to_none=True)
+             fcount += 1
+-            dcount += int(disc is not None)
++            dcount += int(train_d)
+             torch.cuda.synchronize()
+-            dmetrics = ["D_hinge" if args.gan_loss=='hinge' else "D_logistic", "R1_raw", "D_real", "D_fake", "D_dino_real", "D_dino_fake", "D_rgb_real", "D_rgb_fake"] if disc is not None else []
+-            record({"phase": "fake_D" if disc is not None else "fake", "fake_update": fcount, "D_update": dcount,
+-                    "fake_stage": stage_plan.critic_stage(fcount - 1, gcount), "D_fake_stage": 4 if disc is not None else None,
++            feature_name = 'sam' if args.discriminator=='sam' else 'dino'
++            dmetrics = ["D_hinge" if args.gan_loss=='hinge' else "D_logistic", "R1_raw", "D_real", "D_fake", f"D_{feature_name}_real", f"D_{feature_name}_fake", "D_rgb_real", "D_rgb_fake"] if train_d else []
++            record({"phase": "fake_D" if train_d else "fake", "fake_update": fcount, "D_update": dcount,
++                    "fake_stage": boundary_dm.critic_stage(fcount-1) if boundary_mode else stage_plan.critic_stage(fcount - 1, gcount), "D_fake_stage": 4 if train_d else None,
+                     "seconds": time.monotonic() - tick, "fake_grad_norm": fnorm,
+                     "rollout_batch": args.rollout_batch,
+                     "rollout_batches_per_rank": math.ceil((plan.global_batch // world) / args.rollout_batch),
+                     "original_indices_rank": originals,
+-                    **({"D_grad_norm": dnorm, "R1_active": r1_on, "D_collectives":d_collectives} if disc is not None else {}),
++                    **({"D_grad_norm": dnorm, "R1_active": r1_on, "D_collectives":d_collectives} if train_d else {}),
+                     **summarize(stats, ["fake_loss"] + dmetrics)})
+         if stopped:
+             break
+         og.zero_grad(set_to_none=True)
+         tick = time.monotonic()
+-        stats, originals = [], []
+-        use_dmd = stage in stage_plan.dmd
+-        use_gan = stage in stage_plan.gan
++        stats, originals, boundary_stats = [], [], []
++        use_dmd = True if boundary_mode else stage in stage_plan.dmd
++        use_gan = disc is not None if boundary_mode else stage in stage_plan.gan
+         for micro in range(plan.accumulation):
+-            indices, condition, real, rnd = training_batch(gcount, micro, "student")
++            indices, condition, real, rnd = training_batch(gcount, micro, "student", stage)
+             originals.extend(data["original_indices"][i] for i in indices)
+-            with measure("G_rollout"):
+-                generated = rollout(condition, rnd["noise"], stage, True)
+-            with measure("G_low_objective_backward"):
+-                loss = torch.zeros((), device=device)
++            if boundary_mode:
+                 dmd_value = gan_value = torch.zeros((), device=device)
+-                if use_dmd:
+-                    xt = scheduler.noise(generated, rnd["eps"], rnd["t"])
+-                    with torch.no_grad():
+-                        f0 = scheduler.clean(xt, predict(fake, xt, rnd["t"], condition), rnd["t"])
+-                        t0 = scheduler.clean(xt, guided(xt, rnd["t"], condition), rnd["t"])
+-                    dmd, direction = dmd_surrogate(generated, f0, t0)
+-                    loss = loss + dmd
+-                    dmd_value = dmd.detach()
+-                    del xt, f0, t0, direction, dmd
+-                if use_gan:
+-                    rgb = decode_view(vae, generated, rnd["crops"], kind=args.gan_view, grad=True, chunk_size=args.vae_batch)
+-                    rgb = augment_view(rgb, rnd["flips"], 'G', args.gan_augment)
+-                    adversarial = generator_loss(disc(rgb, condition["pooled_prompt_embeds"]), args.gan_loss)
+-                    if args.gradient_probe_every and stage_plan.gan_updates_before(gcount) % args.gradient_probe_every == 0 and micro == 0:
+-                        derivative = torch.autograd.grad(adversarial, generated, retain_graph=True)[0]
+-                        # Undo mean-over-batch scaling for a batch-size-independent diagnostic.
+-                        rms = derivative.square().flatten(1).mean(1).sqrt() * plan.micro_batch
+-                        record({"phase": "GAN_gradient_probe", "g": gcount, "per_image_latent_rms": rms.tolist()})
+-                        del derivative, rms
+-                    loss = loss + args.gan_weight * adversarial
+-                    gan_value = adversarial.detach()
+-                (loss / plan.accumulation).backward()
+-                del generated, loss
+-                if use_gan:
+-                    del rgb, adversarial
++                middle_value = terminal_value = torch.zeros((), device=device)
++                for k, generated in boundary_dm.local_rollout(
++                        lambda x,t,c:predict(student,x,t,c), scheduler, condition, rnd["noise"], knots, stage):
++                    # Separate deterministic RNG stream per phase; packing independent.
++                    phase_rnd = phase_random(gcount,micro,k)
++                    with measure("G_boundary_objective_backward"):
++                        dmd = boundary_loss(generated,k,phase_rnd,condition)
++                        loss = dmd
++                        dmd_value = dmd_value + dmd.detach()
++                        if k == 4:
++                            terminal_value = dmd.detach()
++                            if disc is not None:
++                                rgb = decode_view(vae,generated,rnd['crops'],kind=args.gan_view,
++                                                  grad=True,chunk_size=args.vae_batch)
++                                adversarial = generator_loss(disc(rgb,condition['pooled_prompt_embeds']),args.gan_loss)
++                                if args.gradient_probe_every and gcount % args.gradient_probe_every==0 and micro==0:
++                                    gg=torch.autograd.grad(adversarial,generated,retain_graph=True)[0]
++                                    gd=torch.autograd.grad(dmd,generated,retain_graph=True)[0]
++                                    record({'phase':'boundary_GAN_gradient_probe','g':gcount,
++                                        'GAN_latent_rms':(gg.square().mean().sqrt()*plan.micro_batch).item(),
++                                        'terminal_DM_latent_rms':(gd.square().mean().sqrt()*plan.micro_batch).item()})
++                                    del gg,gd
++                                ramp = min(1.,(gcount+1)/args.gan_ramp_updates) if args.gan_ramp_updates else 1.
++                                loss = loss + args.gan_weight*ramp*adversarial
++                                gan_value = adversarial.detach()
++                        else:
++                            middle_value = dmd.detach()
++                        (loss / plan.accumulation).backward()
++                        del dmd, loss, phase_rnd
++                        if k==4 and disc is not None:
++                            del rgb, adversarial
++                boundary_stats.append(torch.stack([middle_value,terminal_value]))
++                del generated
++            else:
++                with measure("G_rollout"):
++                    generated = rollout(condition, rnd["noise"], stage, True)
++                with measure("G_low_objective_backward"):
++                    loss = torch.zeros((), device=device)
++                    dmd_value = gan_value = torch.zeros((), device=device)
++                    if use_dmd:
++                        xt = scheduler.noise(generated, rnd["eps"], rnd["t"])
++                        with torch.no_grad():
++                            f0 = scheduler.clean(xt, predict(fake, xt, rnd["t"], condition), rnd["t"])
++                            t0 = scheduler.clean(xt, guided(xt, rnd["t"], condition), rnd["t"])
++                        dmd, direction = dmd_surrogate(generated, f0, t0)
++                        loss = loss + dmd
++                        dmd_value = dmd.detach()
++                        del xt, f0, t0, direction, dmd
++                    if use_gan:
++                        rgb = decode_view(vae, generated, rnd["crops"], kind=args.gan_view, grad=True, chunk_size=args.vae_batch)
++                        rgb = augment_view(rgb, rnd["flips"], 'G', args.gan_augment)
++                        adversarial = generator_loss(disc(rgb, condition["pooled_prompt_embeds"]), args.gan_loss)
++                        if args.gradient_probe_every and stage_plan.gan_updates_before(gcount) % args.gradient_probe_every == 0 and micro == 0:
++                            derivative = torch.autograd.grad(adversarial, generated, retain_graph=True)[0]
++                            # Undo mean-over-batch scaling for a batch-size-independent diagnostic.
++                            rms = derivative.square().flatten(1).mean(1).sqrt() * plan.micro_batch
++                            record({"phase": "GAN_gradient_probe", "g": gcount, "per_image_latent_rms": rms.tolist()})
++                            del derivative, rms
++                        loss = loss + args.gan_weight * adversarial
++                        gan_value = adversarial.detach()
++                    (loss / plan.accumulation).backward()
++                    del generated, loss
++                    if use_gan:
++                        del rgb, adversarial
+             with measure("G_PCM_backward"):
+-                th = rnd["pcm_t"]
+-                xh = scheduler.noise(real, rnd["pcm_eps"], th)
+-                with torch.no_grad():
+-                    xk = xh
+-                    for k in range(2):
+-                        tk = th - k * 10
+-                        xk = scheduler.jump(xk, guided(xk, tk, condition), tk, tk - 10)
+-                    target = scheduler.jump(xk, predict(student, xk, th - 20, condition), th - 20, pcm_boundary)
+-                boundary = scheduler.jump(xh, predict(student, xh, th, condition), th, pcm_boundary)
+-                pcm = (boundary - target).square().mean()
++                pcm = pcm_loss(real,rnd,condition)
+                 (args.pcm_weight * pcm / plan.accumulation).backward()
+                 stats.append(torch.stack([dmd_value, gan_value, pcm.detach()]))
+-                del xh, xk, target, boundary, pcm, real, rnd, condition, dmd_value, gan_value
++                del pcm, real, rnd, condition, dmd_value, gan_value
+             if control("student", micro + 1):
+                 stopped = True
+                 break
+@@ -624,11 +793,13 @@
+         dist.all_reduce(cycle_seconds, op=dist.ReduceOp.MAX)
+         cycle_seconds = cycle_seconds.item()
+         record({"phase": "student_done", "g": gcount, "stage": stage, "dmd": use_dmd, "gan": use_gan,
++                **({'supervised_stages':[stage,4], 'GAN_stage':4 if use_gan else None} if boundary_mode else {}),
+                 "grad_norm": gnorm, "seconds": time.monotonic() - tick, "cycle_seconds": cycle_seconds,
+                 "student_samples_per_second": plan.global_batch / cycle_seconds,
+                 "original_indices_rank": originals, "peak_allocated_GiB": torch.cuda.max_memory_allocated() / 1024**3,
+                 "peak_reserved_GiB": torch.cuda.max_memory_reserved() / 1024**3,
+-                **summarize(stats, ["dmd_loss", "gan_loss", "pcm_loss"])})
++                **summarize(stats, ["dmd_loss", "gan_loss", "pcm_loss"]),
++                **(summarize(boundary_stats,["middle_dm_loss","terminal_dm_loss"]) if boundary_mode else {})})
+         trace.step()
+         if args.benchmark:
+             benchmark_cycles.append(cycle_seconds)
+--- before/training_state.py
++++ sdxl_research/training_state.py
+@@ -82,6 +82,9 @@
+                     print('RESUME_REPACK',key,metadata['config'].get(key),'->',config.get(key),flush=True)
+                 continue
+             raise ValueError(f"Resume configuration differs: {key}")
++    for key,default in (('objective','clean'),('grad_clip',10.),('gan_ramp_updates',0)):
++        if metadata['config'].get(key,default) != config.get(key,default):
++            raise ValueError(f'Resume configuration differs: {key}')
+     rank = dist.get_rank()
+     for name, model in models.items():
+         if model is not None:
+@@ -102,3 +105,20 @@
+     torch.set_rng_state(saved["cpu_rng"])
+     torch.cuda.set_rng_state(saved["cuda_rng"])
+     return saved["progress"]
++
++
++def load_student_init(path, student, shard_granularity):
++    """Resolution curriculum: retain only the student at the same FSDP layout."""
++    path = Path(path)
++    metadata = json.loads((path/'complete.json').read_text())
++    if metadata['world_size'] != dist.get_world_size():
++        raise ValueError('Student initialization requires the saved sharding world size')
++    saved = torch.load(path/f'student_rank{dist.get_rank()}.pt',map_location='cpu',weights_only=True)
++    current = student.state_dict()
++    if current.keys() != saved.keys() or any(local(v).shape != saved[k].shape for k,v in current.items()):
++        raise ValueError('Student initialization has incompatible parameter shards')
++    if metadata['config'].get('shard_granularity') != shard_granularity:
++        raise ValueError('Student initialization requires the saved FSDP layout')
++    with torch.no_grad():
++        for key,value in current.items():
++            local(value).copy_(saved[key])

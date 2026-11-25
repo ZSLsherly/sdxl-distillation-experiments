@@ -1,0 +1,454 @@
+{
+  "commit": "bacc57f60c4366cb9374b59860fb094e4edb419f",
+  "config_evaluation": "Original config AST with imports substituted; lightweight attribute dictionary for ConfigDict",
+  "configs": {
+    "sd3": {
+      "seed": 42,
+      "deterministic": true,
+      "base_model": "sd3",
+      "output_dir": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs\\experiments\\sd3\\",
+      "logger_type": "tensorboard",
+      "wandb_project": "distill-rl",
+      "wandb_entity": null,
+      "wandb_api_key": "",
+      "num_epochs": 4001,
+      "save_freq": 2000,
+      "eval_freq": 200,
+      "log_image_resolution": 1024,
+      "mixed_precision": "bf16",
+      "allow_tf32": true,
+      "attn_implementation": "flash_attention_2",
+      "resume_from": "",
+      "sample_dataset": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\dataset\\mixed_200k",
+      "eval_dataset": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\dataset\\mixed_200k",
+      "height": 1024,
+      "width": 1024,
+      "max_sample_samples": 2000000,
+      "image_base_path": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\dataset\\FreedomIntelligence_ShareGPT-4o-Image\\text_to_image",
+      "custom_sigmas": [
+        1.0,
+        0.75,
+        0.5,
+        0.25
+      ],
+      "pretrained": {
+        "model": "stabilityai/stable-diffusion-3-medium-diffusers",
+        "revision": ""
+      },
+      "prompt_fn": "general_ocr",
+      "eval_prompt_fn": "general_ocr",
+      "prompt_fn_kwargs": {},
+      "train": {
+        "reward_fn": {},
+        "batch_size": 16,
+        "gradient_accumulation_steps": 1,
+        "max_grad_norm": 1.0,
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.999,
+        "adam_weight_decay": 0.0001,
+        "adam_epsilon": 1e-08,
+        "vae_slicing": true,
+        "enable_xformers": false,
+        "sigma_min": 0.02,
+        "sigma_max": 0.98,
+        "share_latent_indices": true,
+        "student": {
+          "use_lora": false,
+          "lora_rank": 64,
+          "lora_alpha": 128,
+          "lora_include_ff": true,
+          "lora_path": null,
+          "warmup_steps": 100,
+          "warmup_ratio": 0.05,
+          "update_ratio": 2,
+          "ema": true,
+          "ema_decay": 0.999,
+          "lr_scheduler_type": "constant",
+          "use_8bit_adam": false,
+          "gradient_checkpointing": true,
+          "learning_rate": 1e-05,
+          "full_learning_rate": 1e-05
+        },
+        "fake_teacher": {
+          "enabled": true,
+          "use_lora": false,
+          "lora_rank": 64,
+          "lora_alpha": 128,
+          "lora_include_ff": true,
+          "learning_rate": 5e-06,
+          "full_learning_rate": 5e-06,
+          "gradient_checkpointing": true,
+          "use_8bit_adam": false,
+          "x0_source": "x0_next",
+          "ema_from_student": true,
+          "ema_from_student_decay": 0.999,
+          "ema_from_student_interval": 1,
+          "lr_scheduler_type": "constant",
+          "warmup_steps": 100,
+          "warmup_ratio": 0.0,
+          "sigma_sampling_method": "uniform",
+          "logit_mean": 0.0,
+          "logit_std": 1.0
+        },
+        "loss": {
+          "diffusion": {
+            "weight": 1.0,
+            "enabled": true
+          },
+          "cfg": {
+            "enabled": true,
+            "weight": 1.0,
+            "guidance_scale": 7.0,
+            "norm_clip_min": 0.1,
+            "teacher_sigma_method": "uniform_capped",
+            "teacher_sigma_logit_mean": -1.0,
+            "teacher_sigma_logit_std": 1.0
+          },
+          "ddm": {
+            "enabled": true,
+            "weight": 1.0,
+            "norm_clip_min": 0.1,
+            "teacher_sigma_method": "uniform",
+            "teacher_sigma_logit_mean": 0.0,
+            "teacher_sigma_logit_std": 1.0
+          },
+          "cdm": {
+            "enabled": true,
+            "weight": 1.0,
+            "norm_clip_min": 0.1,
+            "student_x0_base": "x0_final",
+            "teacher_x0_base": "student_pred",
+            "student_sigma_method": "uniform",
+            "student_sigma_logit_mean": 0.0,
+            "student_sigma_logit_std": 1.0,
+            "teacher_sigma_method": "uniform",
+            "teacher_sigma_logit_mean": 0.0,
+            "teacher_sigma_logit_std": 1.0,
+            "student_xt_mode": "trajectory_eps",
+            "teacher_xt_mode": "fresh_independent"
+          }
+        }
+      },
+      "sample": {
+        "num_steps": 4,
+        "guidance_scale": 1.0,
+        "global_std": true,
+        "deterministic": true,
+        "sampling_adapter": "default",
+        "num_image_per_prompt": 1,
+        "num_batches_per_epoch": 1,
+        "random_sigma_schedule": true,
+        "random_sigma_num_steps_min": 1,
+        "random_sigma_num_steps_max": 28,
+        "random_sigma_min": 0.25,
+        "random_sigma_max": 0.95
+      },
+      "eval": {
+        "deterministic": true,
+        "student_num_steps": 4,
+        "student_guidance_scale": 1.0,
+        "skip_first_eval": false,
+        "generate_teacher": true,
+        "teacher_num_steps": 50,
+        "teacher_guidance_scale": 4.5,
+        "distillation_enabled": true,
+        "eval_batch_size": 16,
+        "max_eval_samples": 16,
+        "num_log_images": 8,
+        "save_images": true,
+        "image_save_root": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs/eval_images",
+        "fake_teacher_viz": {
+          "enabled": true,
+          "num_steps": 50,
+          "num_images": 16,
+          "num_log_images": 8
+        },
+        "reward_fn": {
+          "aesthetic": 1.0,
+          "clipscore": 1.0,
+          "pickscore": 1.0,
+          "hpsv2": 1.0
+        }
+      },
+      "post_eval": {
+        "gpus": "",
+        "nproc": 0,
+        "metrics": "imagereward clipscore pickscore hpsv2 hpsv3 aesthetic ocr fid dpgbench",
+        "batch_size": 4,
+        "scoring_batch_size": 2,
+        "max_eval_samples": -1,
+        "diversity_num_prompts": 128,
+        "num_steps": 4,
+        "guidance_scale": 1.0,
+        "save_images": true,
+        "use_cache": false,
+        "no_ema": false,
+        "gen_env": "/mnt/fast-backup/liutao/envs/nft4",
+        "eval_env": "/mnt/fast-backup/liutao/envs/cdm_eval_flash",
+        "pipeline_output_root": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs\\pipelines",
+        "eval_output_root": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs\\evaluations",
+        "output_name_length": 40
+      },
+      "run_name": "test",
+      "audit_count": {
+        "student_updates": 2000,
+        "fake_updates": 4001,
+        "batch_world8": 128,
+        "batch_world16": 256
+      }
+    },
+    "longcat": {
+      "seed": 42,
+      "deterministic": true,
+      "base_model": "longcat",
+      "output_dir": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs\\experiments\\longcat\\",
+      "logger_type": "tensorboard",
+      "wandb_project": "distill-rl",
+      "wandb_entity": null,
+      "wandb_api_key": "",
+      "num_epochs": 2001,
+      "save_freq": 1000,
+      "eval_freq": 100,
+      "log_image_resolution": 1024,
+      "mixed_precision": "bf16",
+      "allow_tf32": true,
+      "attn_implementation": "flash_attention_2",
+      "resume_from": "",
+      "sample_dataset": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\dataset\\mixed_200k",
+      "eval_dataset": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\dataset\\mixed_200k",
+      "height": 1024,
+      "width": 1024,
+      "max_sample_samples": 2000000,
+      "image_base_path": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\dataset\\FreedomIntelligence_ShareGPT-4o-Image\\text_to_image",
+      "custom_sigmas": [
+        1.0,
+        0.75,
+        0.5,
+        0.25
+      ],
+      "pretrained": {
+        "model": "meituan-longcat/LongCat-Image",
+        "revision": ""
+      },
+      "prompt_fn": "general_ocr",
+      "eval_prompt_fn": "general_ocr",
+      "prompt_fn_kwargs": {},
+      "train": {
+        "reward_fn": {},
+        "batch_size": 8,
+        "gradient_accumulation_steps": 1,
+        "max_grad_norm": 1.0,
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.999,
+        "adam_weight_decay": 0.0001,
+        "adam_epsilon": 1e-08,
+        "vae_slicing": true,
+        "enable_xformers": true,
+        "sigma_min": 0.02,
+        "sigma_max": 0.98,
+        "share_latent_indices": true,
+        "student": {
+          "use_lora": false,
+          "lora_rank": 64,
+          "lora_alpha": 128,
+          "lora_include_ff": true,
+          "lora_path": null,
+          "warmup_steps": 100,
+          "warmup_ratio": 0.05,
+          "update_ratio": 2,
+          "ema": true,
+          "ema_decay": 0.999,
+          "lr_scheduler_type": "constant",
+          "use_8bit_adam": false,
+          "gradient_checkpointing": true,
+          "learning_rate": 1e-05,
+          "full_learning_rate": 1e-05
+        },
+        "fake_teacher": {
+          "enabled": true,
+          "use_lora": false,
+          "lora_rank": 64,
+          "lora_alpha": 128,
+          "lora_include_ff": true,
+          "learning_rate": 5e-06,
+          "full_learning_rate": 5e-06,
+          "gradient_checkpointing": true,
+          "use_8bit_adam": false,
+          "x0_source": "x0_next",
+          "ema_from_student": true,
+          "ema_from_student_decay": 0.999,
+          "ema_from_student_interval": 1,
+          "lr_scheduler_type": "constant",
+          "warmup_steps": 100,
+          "warmup_ratio": 0.0,
+          "sigma_sampling_method": "uniform",
+          "logit_mean": 0.0,
+          "logit_std": 1.0
+        },
+        "loss": {
+          "diffusion": {
+            "weight": 1.0,
+            "enabled": true
+          },
+          "cfg": {
+            "enabled": true,
+            "weight": 1.0,
+            "guidance_scale": 7.0,
+            "norm_clip_min": 0.1,
+            "teacher_sigma_method": "uniform_capped",
+            "teacher_sigma_logit_mean": -1.0,
+            "teacher_sigma_logit_std": 1.0
+          },
+          "ddm": {
+            "enabled": true,
+            "weight": 1.0,
+            "norm_clip_min": 0.1,
+            "teacher_sigma_method": "uniform",
+            "teacher_sigma_logit_mean": 0.0,
+            "teacher_sigma_logit_std": 1.0
+          },
+          "cdm": {
+            "enabled": true,
+            "weight": 1.0,
+            "norm_clip_min": 0.1,
+            "student_x0_base": "x0_final",
+            "teacher_x0_base": "student_pred",
+            "student_sigma_method": "uniform",
+            "student_sigma_logit_mean": 0.0,
+            "student_sigma_logit_std": 1.0,
+            "teacher_sigma_method": "uniform",
+            "teacher_sigma_logit_mean": 0.0,
+            "teacher_sigma_logit_std": 1.0,
+            "student_xt_mode": "trajectory_eps",
+            "teacher_xt_mode": "fresh_independent"
+          }
+        }
+      },
+      "sample": {
+        "num_steps": 4,
+        "guidance_scale": 1.0,
+        "global_std": true,
+        "deterministic": true,
+        "sampling_adapter": "default",
+        "num_image_per_prompt": 1,
+        "num_batches_per_epoch": 1,
+        "random_sigma_schedule": true,
+        "random_sigma_num_steps_min": 1,
+        "random_sigma_num_steps_max": 28,
+        "random_sigma_min": 0.25,
+        "random_sigma_max": 0.95
+      },
+      "eval": {
+        "deterministic": true,
+        "student_num_steps": 4,
+        "student_guidance_scale": 1.0,
+        "skip_first_eval": false,
+        "generate_teacher": true,
+        "teacher_num_steps": 50,
+        "teacher_guidance_scale": 4.5,
+        "distillation_enabled": true,
+        "eval_batch_size": 8,
+        "max_eval_samples": 8,
+        "num_log_images": 8,
+        "save_images": true,
+        "image_save_root": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs/eval_images",
+        "fake_teacher_viz": {
+          "enabled": true,
+          "num_steps": 50,
+          "num_images": 8,
+          "num_log_images": 8
+        },
+        "reward_fn": {
+          "aesthetic": 1.0,
+          "clipscore": 1.0,
+          "pickscore": 1.0,
+          "hpsv2": 1.0
+        },
+        "enable_prompt_rewrite": false
+      },
+      "post_eval": {
+        "gpus": "",
+        "nproc": 0,
+        "metrics": "imagereward clipscore pickscore hpsv2 hpsv3 aesthetic ocr fid dpgbench",
+        "batch_size": 4,
+        "scoring_batch_size": 2,
+        "max_eval_samples": -1,
+        "diversity_num_prompts": 128,
+        "num_steps": 4,
+        "guidance_scale": 1.0,
+        "save_images": true,
+        "use_cache": false,
+        "no_ema": false,
+        "gen_env": "/mnt/fast-backup/liutao/envs/nft4",
+        "eval_env": "/mnt/fast-backup/liutao/envs/cdm_eval_flash",
+        "pipeline_output_root": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs\\pipelines",
+        "eval_output_root": "C:\\Users\\sherl\\Documents\\ChatGPT\\推理加速\\research_repos\\CDM-bacc57f60c4366cb9374b59860fb094e4edb419f\\logs\\evaluations",
+        "output_name_length": 40
+      },
+      "random_sigma_min": 0.02,
+      "random_sigma_max": 0.98,
+      "run_name": "longcat 42 2001 1 28, ft x0_next random True 0.25 0.95, cfg True sigma uniform_capped, ddm True, cdm True stu_xt trajectory_eps tea_xt fresh_independent student_pred uniform, stu full 1e-05 ft full 5e-06",
+      "audit_count": {
+        "student_updates": 1000,
+        "fake_updates": 2001,
+        "batch_world8": 64,
+        "batch_world16": 128
+      }
+    }
+  },
+  "datasets": {
+    "dataset\\coco2014val_10k\\test.txt": {
+      "lines": 9986,
+      "nonempty": 9986,
+      "unique": 9952
+    },
+    "dataset\\drawbench\\test.txt": {
+      "lines": 1000,
+      "nonempty": 1000,
+      "unique": 200
+    },
+    "dataset\\drawbench\\train.txt": {
+      "lines": 1,
+      "nonempty": 1,
+      "unique": 1
+    },
+    "dataset\\mixed_200k\\test.txt": {
+      "lines": 5002,
+      "nonempty": 5002,
+      "unique": 5001
+    },
+    "dataset\\mixed_200k\\train.txt": {
+      "lines": 191500,
+      "nonempty": 191500,
+      "unique": 190360
+    },
+    "dataset\\ocr\\test.txt": {
+      "lines": 1018,
+      "nonempty": 1018,
+      "unique": 1018
+    },
+    "dataset\\ocr\\train.txt": {
+      "lines": 19653,
+      "nonempty": 19653,
+      "unique": 19649
+    },
+    "dataset\\pickscore\\test.txt": {
+      "lines": 2048,
+      "nonempty": 2048,
+      "unique": 2048
+    },
+    "dataset\\pickscore\\train.txt": {
+      "lines": 25432,
+      "nonempty": 25432,
+      "unique": 25432
+    },
+    "dataset/dpgbench/dpg_bench.csv": {
+      "rows": 14392,
+      "unique_item_ids": 1065
+    }
+  },
+  "tuple_seed": {
+    "version": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+    "error": "TypeError('The only supported seed types are: None,\\nint, float, str, bytes, and bytearray.')"
+  }
+}

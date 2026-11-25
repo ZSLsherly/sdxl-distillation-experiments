@@ -1,0 +1,532 @@
+"""Real batched SDXL TM/DMD/PixelGAN training; compatible with torch 2.5 FSDP2.
+
+Example: torchrun --standalone --nproc_per_node=2 sdxl_parallel/train.py \
+    --run gan_stage_parallel/joint4_mb2 --variant joint4 --batch 64 --micro-batch 2
+"""
+import argparse
+from collections import defaultdict
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import random
+import shutil
+import time
+
+import torch
+import torch.distributed as dist
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed._composable.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
+from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
+from diffusers.models.attention import BasicTransformerBlock
+from diffusers.models.resnet import Downsample2D, ResnetBlock2D, Upsample2D
+from diffusers.models.transformers.transformer_2d import Transformer2DModel
+
+from batching import (BatchPlan, cfg_prediction, conditions, decode_tiles, flip_images,
+                      r1_penalty, random_inputs, rollout_chunks, slice_batch)
+from objectives import VPSchedule, discriminator_loss, dmd_surrogate
+from pixel import PixelDiscriminator
+
+
+def stamp():
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%dT%H%M%S%z")
+
+
+def local(value):
+    return value.to_local() if hasattr(value, "to_local") else value
+
+
+def write_json(path, value):
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(path)
+
+
+def arguments():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path("/data5/shenglin.zeng/sdxl_crossdistill"))
+    parser.add_argument("--run", required=True)
+    parser.add_argument("--variant", choices=("joint4", "gan4"), required=True)
+    parser.add_argument("--batch", type=int, default=64, help="Effective global batch per optimizer update")
+    parser.add_argument("--micro-batch", type=int, default=2, help="Images processed together on EACH GPU")
+    parser.add_argument("--rollout-batch", type=int, default=8,
+                        help="No-grad sample-generation batch per GPU, independent of training micro-batch")
+    parser.add_argument("--batched-teacher-cfg", action="store_true",
+                        help="Optional: combine teacher unconditional/conditional calls; needs more activation memory")
+    parser.add_argument("--shard-granularity", choices=("fine", "block"), default="fine",
+                        help="Optional block mode reduces FSDP call count but may increase peak memory")
+    parser.add_argument("--hours", type=float, default=24)
+    parser.add_argument("--max-student-updates", type=int)
+    parser.add_argument("--student-lr", type=float, default=1e-6)
+    parser.add_argument("--fake-lr", type=float, default=1e-6)
+    parser.add_argument("--d-lr", type=float, default=1e-4)
+    parser.add_argument("--fake-updates", type=int, default=5)
+    parser.add_argument("--gan-weight", type=float, default=0.005274229682981968)
+    parser.add_argument("--teacher-cfg", type=float, default=8)
+    parser.add_argument("--fake-offload", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--offload-student", action="store_true")
+    parser.add_argument("--eval-every-samples", type=int, default=128)
+    parser.add_argument("--snapshot-seconds", type=int, default=1800)
+    parser.add_argument("--seed", type=int, default=20261017)
+    parser.add_argument("--profile", action="store_true", help="CUDA-synchronized subphase timings; adds synchronization")
+    parser.add_argument("--gradient-probe-every", type=int, default=0,
+                        help="Optional extra GAN backward on first microbatch every N GAN updates; 0 disables")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="3 stage-4 probe cycles: one warmup + two timed; one fake update each")
+    parser.add_argument("--benchmark-batch", type=int, default=16,
+                        help="Fixed global probe batch, so different micro/rollout batches process equal work")
+    args = parser.parse_args()
+    if args.fake_updates < 1 or args.eval_every_samples < 1 or args.snapshot_seconds < 1 or args.hours <= 0:
+        parser.error("Update counts, intervals, and hours must be positive")
+    if args.max_student_updates is not None and args.max_student_updates < 1:
+        parser.error("max-student-updates must be positive")
+    if args.gradient_probe_every < 0:
+        parser.error("gradient-probe-every must be nonnegative")
+    if args.rollout_batch < 1:
+        parser.error("rollout-batch must be positive")
+    return args
+
+
+def main():
+    args = arguments()
+    rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
+    gpu = int(os.environ["LOCAL_RANK"])
+    requested = BatchPlan(args.batch, world, args.micro_batch)
+    plan = BatchPlan(args.benchmark_batch, world, args.micro_batch) if args.benchmark else requested
+    torch.cuda.set_device(gpu)
+    device = torch.device("cuda", gpu)
+    torch.set_num_threads(4)
+    dist.init_process_group("nccl", timeout=timedelta(minutes=30))
+    out = args.root / "outputs" / args.run
+    out.mkdir(parents=True, exist_ok=True)
+    if (out / f"rank{rank}.jsonl").exists():
+        raise FileExistsError(f"Use a fresh run name: {out}")
+    (out / f"pid_rank{rank}").write_text(str(os.getpid()))
+    base = args.root / "models/sdxl-base-1.0"
+    data = torch.load(args.root / "datasets/gan_v3/prepared.pt", weights_only=True, mmap=True, map_location="cpu")
+    manifest = json.loads((args.root / "datasets/gan_v3/manifest.json").read_text())
+    order = random.Random(args.seed).sample(range(data["train_count"]), data["train_count"])
+    mesh = init_device_mesh("cuda", (world,))
+    policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32, cast_forward_inputs=True)
+    torch.manual_seed(args.seed)
+
+    def load_model(train, offload=False):
+        model = UNet2DConditionModel.from_pretrained(
+            base / "unet", variant="fp16", torch_dtype=torch.float32 if train else torch.bfloat16,
+            local_files_only=True).to(device)
+        model.requires_grad_(train).train(train)
+        if train:
+            model.enable_gradient_checkpointing()
+            extra = {"offload_policy": CPUOffloadPolicy()} if offload else {}
+            shard_types = (ResnetBlock2D, Transformer2DModel, Downsample2D, Upsample2D)
+            if args.shard_granularity == "fine":
+                shard_types += (BasicTransformerBlock,)
+            # Fine preserves v4's layout; block mode removes inner transformer
+            # groups. Neither mode keeps full gradients across microbatches.
+            for child in reversed(list(model.modules())):
+                if isinstance(child, shard_types):
+                    fully_shard(child, mesh=mesh, mp_policy=policy, **extra)
+            fully_shard(model, mesh=mesh, mp_policy=policy, **extra)
+        return model
+
+    print("LOAD", rank, "micro_batch", plan.micro_batch, "accumulation", plan.accumulation, flush=True)
+    student = load_model(True, args.offload_student)
+    fake = load_model(True, args.fake_offload)
+    teacher = load_model(False)
+    vae = AutoencoderKL.from_pretrained(base, subfolder="vae", variant="fp16", torch_dtype=torch.float32,
+                                      local_files_only=True).to(device).eval().requires_grad_(False)
+    torch.manual_seed(args.seed + 7000)
+    disc = PixelDiscriminator(args.root / "models/dinov2-small").to(device)
+    disc.set_heads(False)
+    og = torch.optim.AdamW(student.parameters(), lr=args.student_lr, betas=(.9, .999), weight_decay=.01, foreach=False)
+    of = torch.optim.AdamW(fake.parameters(), lr=args.fake_lr, betas=(.9, .999), weight_decay=.01, foreach=False)
+    od = torch.optim.AdamW(disc.trainable(), lr=args.d_lr, betas=(0, .99), weight_decay=0, foreach=False)
+    scheduler = VPSchedule(DDIMScheduler.from_pretrained(base, subfolder="scheduler", local_files_only=True).alphas_cumprod.to(device))
+    knots = [999, 919, 499, 199, -1]
+    config = {**vars(args), "root": str(args.root), "world_size": world, "effective_batch": plan.global_batch,
+              "accumulation": plan.accumulation, "microbatch_per_gpu": plan.micro_batch,
+              "requested_training_batch": requested.global_batch, "schedule": knots,
+              "student_cfg": 1, "train_count": data["train_count"],
+              "initialization": "untouched SDXL Base; independent student/fake/D per run",
+              "checkpoint_kind": "timestamped BF16 student shards only",
+              "fake_rollout_batches_per_update_per_rank": math.ceil((plan.global_batch // world) / args.rollout_batch),
+              "rollout_cache": "one local effective fake batch; GPU latents only plus its existing batch inputs; discarded before next student update",
+              "batch_semantics": "mean loss / accumulation, followed by FSDP mean over ranks",
+              "augmentation": "independent per-image crop/flip; sample RNG does not depend on batch packing",
+              "benchmark_protocol": "fixed probe batch; 1 fake/D update + 1 stage4 student update per cycle; no eval/snapshot; cycle1 warmup" if args.benchmark else None}
+    if rank == 0:
+        write_json(out / "config.json", config)
+        write_json(out / "data_manifest.json", manifest)
+        source = out / "source"
+        source.mkdir(exist_ok=True)
+        hashes = {}
+        for name in ("train.py", "batching.py", "pixel.py", "objectives.py"):
+            file = Path(__file__).with_name(name)
+            shutil.copyfile(file, source / name)
+            hashes[name] = hashlib.sha256(file.read_bytes()).hexdigest()
+        write_json(out / "source_sha256.json", hashes)
+    log = (out / f"rank{rank}.jsonl").open("w", encoding="utf-8")
+    gcount = fcount = dcount = 0
+    start = last_snapshot = last_status = time.monotonic()
+    phase_times = defaultdict(float)
+    benchmark_cycles = []
+    torch.cuda.reset_peak_memory_stats()
+
+    @contextmanager
+    def measure(name):
+        if args.profile:
+            torch.cuda.synchronize()
+            tick = time.monotonic()
+        yield
+        if args.profile:
+            torch.cuda.synchronize()
+            phase_times[name] += time.monotonic() - tick
+
+    def predict(model, x, t, condition, negative=False):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            return model(x, t,
+                         encoder_hidden_states=condition["negative_prompt_embeds" if negative else "prompt_embeds"],
+                         added_cond_kwargs={"text_embeds": condition["negative_pooled_prompt_embeds" if negative else "pooled_prompt_embeds"],
+                                            "time_ids": condition["time_ids"]}, return_dict=False)[0].float()
+
+    def guided(x, t, condition):
+        return cfg_prediction(predict, teacher, x, t, condition, args.teacher_cfg, args.batched_teacher_cfg)
+
+    def rollout(condition, noise, stage=4, grad=False):
+        x = noise
+        batch = x.shape[0]
+        for i in range(stage):
+            t = torch.full((batch,), knots[i], device=device, dtype=torch.long)
+            with torch.enable_grad() if grad and i == stage - 1 else torch.no_grad():
+                eps = predict(student, x, t, condition)
+                x = scheduler.jump(x, eps, t, knots[i + 1] if i < stage - 1 else -1)
+            if i < stage - 1:
+                x = x.detach()
+        return x
+
+    def training_batch(update, micro, phase):
+        positions = plan.positions(update, micro, rank)
+        indices = [order[pos % len(order)] for pos in positions]
+        condition = conditions(data, indices, device)
+        real = data["latents"].index_select(0, torch.tensor(indices)).to(device, dtype=torch.float32)
+        randoms = random_inputs(positions, phase, device, seed=args.seed)
+        return indices, condition, real, randoms
+
+    def generate_fake_batch(update):
+        # Student weights are fixed for the entire fake/D update. Generate its
+        # samples with larger no-grad batches, then slice this cache into the
+        # unchanged backward microbatches. No samples are reused across updates.
+        positions = plan.rank_positions(update, rank)
+        indices = [order[pos % len(order)] for pos in positions]
+        condition = conditions(data, indices, device)
+        randoms = random_inputs(positions, "fake", device, seed=args.seed)
+        generated = rollout_chunks(rollout, condition, randoms["noise"], args.rollout_batch)
+        # Initial rollout noise is not needed once all final latents are cached.
+        del randoms["noise"]
+        real = data["latents"].index_select(0, torch.tensor(indices)).to(device, dtype=torch.float32)
+        return indices, condition, real, randoms, generated
+
+    def clip_sharded(model):
+        gradients = [local(p.grad) for p in model.parameters() if p.grad is not None]
+        if not gradients:
+            raise RuntimeError("Expected gradients")
+        # fake gradients live on CPU: reduce there first, then transfer ONE
+        # scalar, instead of one CUDA copy/synchronization per parameter.
+        norms = torch.stack(torch._foreach_norm(gradients, 2))
+        total = norms.double().square().sum().to(device)
+        dist.all_reduce(total)
+        norm = total.sqrt().item()
+        if not math.isfinite(norm):
+            raise FloatingPointError(f"Non-finite gradient norm: {norm}")
+        torch._foreach_mul_(gradients, min(1., 10. / (norm + 1e-12)))
+        return norm
+
+    def average_disc_gradients():
+        # D is replicated. The only reduction is at the optimizer boundary.
+        for p in disc.trainable():
+            if p.grad is not None:
+                dist.all_reduce(p.grad)
+                p.grad.div_(world)
+
+    def summarize(values, names):
+        value = torch.stack(values).mean(0)
+        dist.all_reduce(value)
+        value.div_(world)
+        return dict(zip(names, value.cpu().tolist()))
+
+    def record(row):
+        row.update(timestamp=stamp(), effective_batch=plan.global_batch,
+                   micro_batch=plan.micro_batch, accumulation=plan.accumulation)
+        log.write(json.dumps(row) + "\n")
+        log.flush()
+        print("UPDATE", rank, row["phase"], row.get("g", row.get("fake_update")), row.get("seconds"), flush=True)
+
+    def snapshot(reason, phase):
+        nonlocal last_snapshot
+        names = [stamp() if rank == 0 else None]
+        dist.broadcast_object_list(names, src=0)
+        dest = out / "weights" / f"{names[0]}_g{gcount:06d}_{reason}"
+        dest.mkdir(parents=True, exist_ok=True)
+        state = {key: local(value).detach().to(torch.bfloat16).cpu() for key, value in student.state_dict().items()}
+        torch.save(state, dest / f"student_rank{rank}.pt")
+        del state
+        write_json(dest / f"shapes_rank{rank}.json", {
+            key: {"shape": list(value.shape), "placements": [str(p) for p in value.placements] if hasattr(value, "placements") else []}
+            for key, value in student.state_dict().items()})
+        dist.barrier()
+        if rank == 0:
+            write_json(dest / "complete.json", {"timestamp": names[0], "student_updates": gcount,
+                       "student_samples": gcount * plan.global_batch, "fake_updates": fcount,
+                       "phase": phase, "reason": reason, "world_size": world,
+                       "note": "Committed student weights only; partial gradients and optimizer state are not saved"})
+        last_snapshot = time.monotonic()
+
+    def control(phase, micro):
+        nonlocal last_status
+        now = time.monotonic()
+        flags = [0, 0]
+        if rank == 0:
+            flags[0] = int(not args.benchmark and now - last_snapshot >= args.snapshot_seconds)
+            flags[1] = int(now - start >= args.hours * 3600 or (out / "STOP_REQUEST").exists() or (out.parent / "STOP_REQUEST").exists())
+        tensor = torch.tensor(flags, device=device)
+        dist.broadcast(tensor, src=0)
+        save, stop = tensor.cpu().tolist()
+        if save:
+            snapshot("half_hour", phase)
+        if rank == 0 and (now - last_status >= 30 or micro == 0):
+            write_json(out / "status.json", {"status": "running", "timestamp": stamp(), "phase": phase,
+                       "student_updates": gcount, "student_samples": gcount * plan.global_batch,
+                       "fake_updates": fcount, "D_updates": dcount, "micro_finished": micro,
+                       "micro_total": plan.accumulation, "microbatch_per_gpu": plan.micro_batch,
+                       "effective_batch": plan.global_batch, "elapsed_seconds": now - start,
+                       "peak_allocated_GiB": torch.cuda.max_memory_allocated() / 1024**3})
+            last_status = now
+        return bool(stop)
+
+    @torch.no_grad()
+    def evaluate(tag):
+        names = [stamp() if rank == 0 else None]
+        dist.broadcast_object_list(names, src=0)
+        dest = out / "eval" / f"{names[0]}_g{gcount:06d}_{tag}"
+        dest.mkdir(parents=True, exist_ok=True)
+        heldout = [data["original_indices"].index(i) for i in manifest["eval_original_indices"]]
+        all_cases = [("train", i) for i in order[:4]] + [("holdout", i) for i in heldout[:4]]
+        if len(all_cases) % world:
+            raise ValueError("Evaluation case count must divide world_size for FSDP")
+        cases = all_cases[rank::world]
+        rows = []
+        from PIL import Image
+        for offset in range(0, len(cases), plan.micro_batch):
+            selected = cases[offset:offset + plan.micro_batch]
+            c = conditions(data, [i for _, i in selected], device)
+            noise = torch.stack([torch.randn((4, 128, 128), device=device,
+                                generator=torch.Generator(device=device).manual_seed(102)) for _ in selected])
+            generated = rollout(c, noise)
+            if not torch.isfinite(generated).all():
+                raise FloatingPointError("Non-finite evaluation output")
+            # Training networks are batched. Full 1024px FP32 VAE evaluation
+            # stays image-by-image to avoid an unrelated full-frame VAE OOM.
+            for j, (split, idx) in enumerate(selected):
+                x = generated[j:j + 1]
+                rgb = vae.decode(x / vae.config.scaling_factor, return_dict=False)[0]
+                image = ((rgb[0] / 2 + .5).clamp(0, 1).permute(1, 2, 0) * 255).round().to(torch.uint8).cpu().numpy()
+                filename = f'{split}_original{data["original_indices"][idx]}_seed102.png'
+                Image.fromarray(image).save(dest / filename)
+                row = {"split": split, "original_index": data["original_indices"][idx], "prompt": data["prompts"][idx],
+                       "image": filename, "seed": 102, "latent_std": x.std().item()}
+                # Random spectral-norm buffers have not been iterated at g=0;
+                # do not misreport their raw initial logits as a quality score.
+                if dcount:
+                    real = data["latents"][idx:idx + 1].to(device, dtype=torch.float32)
+                    pair = torch.cat([real, x])
+                    tile = decode_tiles(vae, pair, [(40, 40)] * 2)
+                    parts = disc(tile, c["pooled_prompt_embeds"][j:j + 1].expand(2, -1), return_parts=True)
+                    row["D_real_fake"] = {key: parts[key].tolist() for key in ("total", "dino", "rgb")}
+                rows.append(row)
+        write_json(dest / f"rank{rank}.json", {"student_updates": gcount,
+                   "student_samples": gcount * plan.global_batch, "samples": rows})
+        dist.barrier()
+        print("EVALUATED", rank, gcount, flush=True)
+
+    if not args.benchmark:
+        evaluate("initial")
+    limit = 3 if args.benchmark else (args.max_student_updates or 10**9)
+    stopped = False
+    while gcount < limit:
+        if control("cycle_start", 0):
+            stopped = True
+            break
+        torch.cuda.synchronize()
+        cycle_start = time.monotonic()
+        stage = 4 if args.benchmark else 2 + gcount % 3
+        repeats = 1 if args.benchmark else args.fake_updates
+        for _ in range(repeats):
+            tick = time.monotonic()
+            of.zero_grad(set_to_none=True)
+            od.zero_grad(set_to_none=True)
+            disc.set_heads(True)
+            stats, originals = [], []
+            with measure("fake_student_rollout"):
+                cached_indices, cached_condition, cached_real, cached_randoms, cached_generated = generate_fake_batch(fcount)
+            for micro in range(plan.accumulation):
+                begin, end = micro * plan.micro_batch, (micro + 1) * plan.micro_batch
+                indices = cached_indices[begin:end]
+                condition = slice_batch(cached_condition, begin, end)
+                real = cached_real[begin:end]
+                rnd = slice_batch(cached_randoms, begin, end)
+                generated = cached_generated[begin:end]
+                originals.extend(data["original_indices"][i] for i in indices)
+                with measure("D_decode"), torch.no_grad():
+                    real_rgb = flip_images(decode_tiles(vae, real, rnd["crops"]), rnd["flips"])
+                    fake_rgb = flip_images(decode_tiles(vae, generated, rnd["crops"]), rnd["flips"])
+                with measure("D_forward_backward"):
+                    r1_on = dcount % 16 == 15 or (args.benchmark and dcount == 0)
+                    real_rgb.requires_grad_(r1_on)
+                    pr = disc(real_rgb, condition["pooled_prompt_embeds"], return_parts=True)
+                    pf = disc(fake_rgb, condition["pooled_prompt_embeds"], return_parts=True)
+                    hinge = discriminator_loss(pr["total"], pf["total"])
+                    r1 = r1_penalty(pr["total"], real_rgb) if r1_on else torch.zeros((), device=device)
+                    dloss = hinge + .05 * 16 * r1
+                    dvalues = torch.stack([hinge, r1, pr["total"].mean(), pf["total"].mean(),
+                                          pr["dino"].mean(), pf["dino"].mean(), pr["rgb"].mean(), pf["rgb"].mean()]).detach()
+                    (dloss / plan.accumulation).backward()
+                    del real_rgb, fake_rgb, pr, pf, hinge, r1, dloss
+                with measure("fake_forward_backward"):
+                    xt = scheduler.noise(generated, rnd["eps"], rnd["t"])
+                    floss = (predict(fake, xt, rnd["t"], condition) - rnd["eps"]).square().mean()
+                    (floss / plan.accumulation).backward()
+                    stats.append(torch.cat([floss.detach().reshape(1), dvalues]))
+                    del xt, floss, generated, real, rnd, condition, dvalues
+                if control("fake_D", micro + 1):
+                    stopped = True
+                    break
+            del cached_indices, cached_condition, cached_real, cached_randoms, cached_generated
+            if stopped:
+                break
+            with measure("D_optimizer"):
+                average_disc_gradients()
+                dnorm = torch.nn.utils.clip_grad_norm_(disc.trainable(), 10, error_if_nonfinite=True).item()
+                od.step()
+                od.zero_grad(set_to_none=True)
+                disc.set_heads(False)
+            with measure("fake_optimizer"):
+                fnorm = clip_sharded(fake)
+                of.step()
+                of.zero_grad(set_to_none=True)
+            fcount += 1
+            dcount += 1
+            torch.cuda.synchronize()
+            record({"phase": "fake_D", "fake_update": fcount, "D_update": dcount,
+                    "seconds": time.monotonic() - tick, "fake_grad_norm": fnorm, "D_grad_norm": dnorm,
+                    "rollout_batch": args.rollout_batch,
+                    "rollout_batches_per_rank": math.ceil((plan.global_batch // world) / args.rollout_batch),
+                    "original_indices_rank": originals, "R1_active": r1_on,
+                    **summarize(stats, ["fake_loss", "D_hinge", "R1_raw", "D_real", "D_fake", "D_dino_real", "D_dino_fake", "D_rgb_real", "D_rgb_fake"])})
+        if stopped:
+            break
+        og.zero_grad(set_to_none=True)
+        tick = time.monotonic()
+        stats, originals = [], []
+        use_dmd = not (args.variant == "gan4" and stage == 4)
+        use_gan = stage == 4
+        for micro in range(plan.accumulation):
+            indices, condition, real, rnd = training_batch(gcount, micro, "student")
+            originals.extend(data["original_indices"][i] for i in indices)
+            with measure("G_rollout"):
+                generated = rollout(condition, rnd["noise"], stage, True)
+            with measure("G_low_objective_backward"):
+                loss = torch.zeros((), device=device)
+                dmd_value = gan_value = torch.zeros((), device=device)
+                if use_dmd:
+                    xt = scheduler.noise(generated, rnd["eps"], rnd["t"])
+                    with torch.no_grad():
+                        f0 = scheduler.clean(xt, predict(fake, xt, rnd["t"], condition), rnd["t"])
+                        t0 = scheduler.clean(xt, guided(xt, rnd["t"], condition), rnd["t"])
+                    dmd, direction = dmd_surrogate(generated, f0, t0)
+                    loss = loss + dmd
+                    dmd_value = dmd.detach()
+                    del xt, f0, t0, direction, dmd
+                if use_gan:
+                    rgb = decode_tiles(vae, generated, rnd["crops"], grad=True)
+                    adversarial = -disc(rgb, condition["pooled_prompt_embeds"]).mean()
+                    if args.gradient_probe_every and (gcount // 3) % args.gradient_probe_every == 0 and micro == 0:
+                        derivative = torch.autograd.grad(adversarial, generated, retain_graph=True)[0]
+                        # Undo mean-over-batch scaling for a batch-size-independent diagnostic.
+                        rms = derivative.square().flatten(1).mean(1).sqrt() * plan.micro_batch
+                        record({"phase": "GAN_gradient_probe", "g": gcount, "per_image_latent_rms": rms.tolist()})
+                        del derivative, rms
+                    loss = loss + args.gan_weight * adversarial
+                    gan_value = adversarial.detach()
+                (loss / plan.accumulation).backward()
+                del generated, loss
+                if use_gan:
+                    del rgb, adversarial
+            with measure("G_PCM_backward"):
+                th = rnd["pcm_t"]
+                xh = scheduler.noise(real, rnd["pcm_eps"], th)
+                with torch.no_grad():
+                    xk = xh
+                    for k in range(2):
+                        tk = th - k * 10
+                        xk = scheduler.jump(xk, guided(xk, tk, condition), tk, tk - 10)
+                    target = scheduler.jump(xk, predict(student, xk, th - 20, condition), th - 20, 919)
+                boundary = scheduler.jump(xh, predict(student, xh, th, condition), th, 919)
+                pcm = (boundary - target).square().mean()
+                (10 * pcm / plan.accumulation).backward()
+                stats.append(torch.stack([dmd_value, gan_value, pcm.detach()]))
+                del xh, xk, target, boundary, pcm, real, rnd, condition, dmd_value, gan_value
+            if control("student", micro + 1):
+                stopped = True
+                break
+        if stopped:
+            break
+        with measure("G_optimizer"):
+            gnorm = clip_sharded(student)
+            og.step()
+            og.zero_grad(set_to_none=True)
+        gcount += 1
+        torch.cuda.synchronize()
+        cycle_seconds = torch.tensor(time.monotonic() - cycle_start, device=device)
+        dist.all_reduce(cycle_seconds, op=dist.ReduceOp.MAX)
+        cycle_seconds = cycle_seconds.item()
+        record({"phase": "student_done", "g": gcount, "stage": stage, "dmd": use_dmd, "gan": use_gan,
+                "grad_norm": gnorm, "seconds": time.monotonic() - tick, "cycle_seconds": cycle_seconds,
+                "student_samples_per_second": plan.global_batch / cycle_seconds,
+                "original_indices_rank": originals, "peak_allocated_GiB": torch.cuda.max_memory_allocated() / 1024**3,
+                **summarize(stats, ["dmd_loss", "gan_loss", "pcm_loss"])})
+        if args.benchmark:
+            benchmark_cycles.append(cycle_seconds)
+        elif gcount % math.ceil(args.eval_every_samples / plan.global_batch) == 0:
+            evaluate("periodic")
+    # Any partial accumulation is intentionally discarded; snapshots contain
+    # only committed weights and are not advertised as resumable training state.
+    og.zero_grad(set_to_none=True)
+    of.zero_grad(set_to_none=True)
+    od.zero_grad(set_to_none=True)
+    if not args.benchmark:
+        snapshot("stopped" if stopped else "end", "finished")
+    peak = torch.tensor(torch.cuda.max_memory_allocated() / 1024**3, device=device)
+    dist.all_reduce(peak, op=dist.ReduceOp.MAX)
+    if rank == 0:
+        status = {"status": "stopped" if stopped else "complete", "timestamp": stamp(),
+                  "student_updates": gcount, "fake_updates": fcount, "D_updates": dcount,
+                  "effective_batch": plan.global_batch, "microbatch_per_gpu": plan.micro_batch,
+                  "accumulation": plan.accumulation, "peak_allocated_GiB": peak.item(),
+                  "profile_rank0_seconds": dict(phase_times)}
+        if args.benchmark:
+            measured = benchmark_cycles[1:]
+            status.update(benchmark=True, warmup_cycles=1, measured_cycles=len(measured),
+                          cycle_seconds=benchmark_cycles,
+                          student_samples_per_second=len(measured) * plan.global_batch / sum(measured) if measured else None,
+                          note="Fixed-size throughput probe with fake:G=1:1; not a formal batch64/5:1 training run")
+            write_json(out / "benchmark.json", status)
+        write_json(out / "status.json", status)
+    log.close()
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()

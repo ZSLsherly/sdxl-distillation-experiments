@@ -1,0 +1,1 @@
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 /data1/shenglin.zeng/sdxl_eval_uniform_20261025/env/bin/python -c 'import torch;print(torch.cuda.is_available(),torch.cuda.device_count()); x=torch.ones(1,device="cuda"); print(x,torch.cuda.get_device_name())'

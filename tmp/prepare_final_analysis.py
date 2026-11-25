@@ -1,0 +1,13 @@
+from pathlib import Path
+p=Path('.')
+s=(p/'sdxl_benchmark_four.py').read_text(encoding='utf-8')
+s=s.replace("OUT=ROOT/'outputs/benchmark_curves_four_20261018'", "OUT=ROOT/'outputs/benchmark_final_20261020'")
+s=s.replace("['gan_stage_parallel','gan_stage_joint34','dmd_control']", "['gan_stage_parallel','gan_stage_joint4_4gpu','gan_stage_joint34_4gpu','dmd_control']")
+s=s.replace("for run in launch['runs']:\n            p=", "for run in launch['runs']:\n            if run['variant']=='joint4' and run['run'].startswith('gan_stage_parallel/'):\n                continue\n            p=")
+s=s.replace("OUT/'per_image.jsonl']:", "ROOT/'outputs/benchmark_curves_four_20261018/per_image.jsonl',OUT/'per_image.jsonl']:")
+(p/'sdxl_benchmark_final.py').write_text(s,encoding='utf-8')
+s=(p/'sdxl_parallel/draw_four_comparison.py').read_text(encoding='utf-8')
+s=s.replace('gan_stage_parallel/joint4_20261017T232317_mb16','gan_stage_joint4_4gpu/joint4_20261019T122237_4gpu_mb16')
+s=s.replace('gan_stage_joint34/joint34_20261018T091442_4gpu_mb16','gan_stage_joint34_4gpu/joint34_20261019T195324_4gpu_mb16')
+s=s.replace('common=118','common=160').replace('benchmark_curves_four_20261018','benchmark_final_20261020')
+(p/'sdxl_parallel/draw_final_comparison.py').write_text(s,encoding='utf-8')

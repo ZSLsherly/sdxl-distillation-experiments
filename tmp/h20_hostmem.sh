@@ -1,0 +1,1 @@
+free -h;for p in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory/memory.limit_in_bytes /sys/fs/cgroup/memory/memory.usage_in_bytes; do [ ! -e "$p" ] || { echo "$p"; cat "$p"; }; done

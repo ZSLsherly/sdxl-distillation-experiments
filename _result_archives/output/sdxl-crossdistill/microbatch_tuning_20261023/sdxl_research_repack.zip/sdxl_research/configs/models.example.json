@@ -1,0 +1,7 @@
+{
+  "uniform_joint4": {
+    "checkpoint": "outputs/research/REPLACE_RUN/weights/REPLACE_G160_CHECKPOINT"
+  },
+  "sdxl": {},
+  "dmd2": {}
+}

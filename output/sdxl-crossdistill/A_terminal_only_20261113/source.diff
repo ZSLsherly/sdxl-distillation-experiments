@@ -1,0 +1,101 @@
+--- A/boundary.py
++++ A_terminal/boundary.py
+@@ -97,8 +97,8 @@
+     One four-call trajectory. No optimizer step until all local/PCM backwards.
+     This intentionally does not implement two-step terminal unrolling.
+     """
+-    if middle not in (2, 3):
+-        raise ValueError('Middle phase must be 2 or 3')
++    if middle not in (None, 2, 3):
++        raise ValueError('Middle phase must be None, 2 or 3')
+     x = noise.detach()
+     for k in range(1, 5):
+         t = torch.full((len(x),), knots[k-1], device=x.device, dtype=torch.long)
+--- A/train.py
++++ A_terminal/train.py
+@@ -38,6 +38,7 @@
+ from training_state import save_training, load_training, load_student_init
+ from runtime import average_gradients, TraceWindow, schedule_settings
+ from turning_sampling import TurningSampler
++from pcm_middle_probe_n13 import gradient_diagnostics, PROBE_UPDATES
+ 
+ 
+ def shard_unet(model, mesh, policy, granularity='fine', offload=False):
+@@ -323,6 +324,11 @@
+             gan_ramp_updates=args.gan_ramp_updates, sam_path=str(args.sam_path),
+             fake_normalization='conditional epsilon; clipped inverse variance',
+             student_normalization='boundary posterior mean; 0.5 MSE')
++    config.update(student_stages=[4], dmd_stages=[4], student_dmd_t_range={4:ranges[4]},
++                  fake_dmd_t_range=ranges, diagnostic_dm_t_range=ranges,
++                  ablation='A: remove student middle DM; retain paired boundary fake',
++                  diagnostic_updates=list(PROBE_UPDATES), diagnostic_batch=8)
++    config['experiment_modules']['student']='PCM + terminal DM only'
+     if rank == 0:
+         write_json(out / "config.json", config)
+         write_json(out / "data_manifest.json", manifest)
+@@ -330,7 +336,7 @@
+         source.mkdir(exist_ok=True)
+         hashes = {}
+         for name in ("train.py", "batching.py", "pixel.py", "objectives.py", "training_state.py", "runtime.py",
+-                     "stage_policy.py", "gan_losses.py", "image_views.py", "boundary.py", "sam_pixel.py", "turning_sampling.py"):
++                     "stage_policy.py", "gan_losses.py", "image_views.py", "boundary.py", "sam_pixel.py", "turning_sampling.py", "pcm_middle_probe_n13.py"):
+             file = Path(__file__).with_name(name)
+             shutil.copyfile(file, source / name)
+             hashes[name] = hashlib.sha256(file.read_bytes()).hexdigest()
+@@ -755,6 +761,34 @@
+             break
+         og.zero_grad(set_to_none=True)
+         tick = time.monotonic()
++        diagnostic_seconds = 0.
++        if gcount + 1 in PROBE_UPDATES:
++            probe_start=time.monotonic()
++            with torch.random.fork_rng(devices=[device.index or 0]):
++                ids,cond,real,rnd=training_batch(0,0,'student',4)
++                cond=slice_batch(cond,0,8);real=real[:8];rnd=slice_batch(rnd,0,8)
++                times={k:slice_batch(phase_random(0,0,k),0,8) for k in (2,3,4)}
++                def probe_dm(k):
++                    # Middle probes are hypothetical gradients, never optimizer updates.
++                    stream=boundary_dm.local_rollout(lambda x,t,c:predict(student,x,t,c),
++                        scheduler,cond,rnd['noise'],knots,k if k in (2,3) else None)
++                    try:
++                        for current,y in stream:
++                            if current==k:
++                                return boundary_loss(y,k,times[k],cond)
++                    finally:
++                        stream.close()
++                losses={'PCM':lambda:args.pcm_weight*pcm_loss(real,rnd,cond),
++                        **{f'DM{k}':lambda k=k:probe_dm(k) for k in (2,3,4)}}
++                metrics=gradient_diagnostics(losses,lambda:og.zero_grad(set_to_none=True),
++                    lambda:clip_sharded(student,clip=False),device,args.seed)
++                torch.cuda.synchronize()
++                diagnostic_seconds=time.monotonic()-probe_start
++                record(dict(phase='pcm_middle_gradient_probe',g=gcount+1,
++                    original_ids=[data['original_indices'][i] for i in ids[:8]],
++                    timing='after paired fake updates; before student optimizer',
++                    diagnostic_seconds=diagnostic_seconds,**metrics))
++                del ids,cond,real,rnd,times,losses,probe_dm,metrics
+         stats, originals, boundary_stats = [], [], []
+         use_dmd = True if boundary_mode else stage in stage_plan.dmd
+         use_gan = disc is not None if boundary_mode else stage in stage_plan.gan
+@@ -765,7 +799,7 @@
+                 dmd_value = gan_value = torch.zeros((), device=device)
+                 middle_value = terminal_value = torch.zeros((), device=device)
+                 for k, generated in boundary_dm.local_rollout(
+-                        lambda x,t,c:predict(student,x,t,c), scheduler, condition, rnd["noise"], knots, stage):
++                        lambda x,t,c:predict(student,x,t,c), scheduler, condition, rnd["noise"], knots, None):
+                     # Separate deterministic RNG stream per phase; packing independent.
+                     phase_rnd = phase_random(gcount,micro,k)
+                     with measure("G_boundary_objective_backward"):
+@@ -857,8 +891,10 @@
+         dist.all_reduce(cycle_seconds, op=dist.ReduceOp.MAX)
+         cycle_seconds = cycle_seconds.item()
+         record({"phase": "student_done", "g": gcount, "stage": stage, "dmd": use_dmd, "gan": use_gan,
+-                **({'supervised_stages':[stage,4], 'GAN_stage':4 if use_gan else None} if boundary_mode else {}),
+-                "grad_norm": gnorm, "seconds": time.monotonic() - tick, "cycle_seconds": cycle_seconds,
++                **({'supervised_stages':[4], 'GAN_stage':4 if use_gan else None} if boundary_mode else {}),
++                "grad_norm": gnorm, "gradient_clipped":gnorm > args.grad_clip,
++                "diagnostic_seconds":diagnostic_seconds, "training_cycle_seconds":cycle_seconds-diagnostic_seconds,
++                "seconds": time.monotonic() - tick, "cycle_seconds": cycle_seconds,
+                 "student_samples_per_second": plan.global_batch / cycle_seconds,
+                 "original_indices_rank": originals, "peak_allocated_GiB": torch.cuda.max_memory_allocated() / 1024**3,
+                 "peak_reserved_GiB": torch.cuda.max_memory_reserved() / 1024**3,

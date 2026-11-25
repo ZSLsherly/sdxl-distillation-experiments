@@ -1,0 +1,106 @@
+{
+  "engine": "GenerateI2V",
+  "output_dir": "/data1/shenglin.zeng/dymd_prior_8_20261101/two_by_two_trial/group_a/videos",
+  "proj_name": "two_gpu_trial",
+  "inference": {
+    "positive_prompt": "/data1/shenglin.zeng/dymd_prior_8_20261101/two_by_two_trial/group_a/manifest.txt",
+    "negative_prompt": "\u8272\u8c03\u8273\u4e3d\uff0c\u8fc7\u66dd\uff0c\u9759\u6001\uff0c\u7ec6\u8282\u6a21\u7cca\u4e0d\u6e05\uff0c\u5b57\u5e55\uff0c\u98ce\u683c\uff0c\u4f5c\u54c1\uff0c\u753b\u4f5c\uff0c\u753b\u9762\uff0c\u9759\u6b62\uff0c\u6574\u4f53\u53d1\u7070\uff0c\u6700\u5dee\u8d28\u91cf\uff0c\u4f4e\u8d28\u91cf\uff0cJPEG\u538b\u7f29\u6b8b\u7559\uff0c\u4e11\u964b\u7684\uff0c\u6b8b\u7f3a\u7684\uff0c\u591a\u4f59\u7684\u624b\u6307\uff0c\u753b\u5f97\u4e0d\u597d\u7684\u624b\u90e8\uff0c\u753b\u5f97\u4e0d\u597d\u7684\u8138\u90e8\uff0c\u7578\u5f62\u7684\uff0c\u6bc1\u5bb9\u7684\uff0c\u5f62\u6001\u7578\u5f62\u7684\u80a2\u4f53\uff0c\u624b\u6307\u878d\u5408\uff0c\u9759\u6b62\u4e0d\u52a8\u7684\u753b\u9762\uff0c\u6742\u4e71\u7684\u80cc\u666f\uff0c\u4e09\u6761\u817f\uff0c\u80cc\u666f\u4eba\u5f88\u591a\uff0c\u5012\u7740\u8d70",
+    "max_area": 307200,
+    "num_frames": 81,
+    "fps": 16,
+    "guidance_scale": 5.0,
+    "seed": 0
+  },
+  "diffusion": {
+    "T": 1000,
+    "sampling_timestep": {
+      "_class_name": "TrailingSamplingTimesteps",
+      "num_sampling_steps": 40,
+      "shift": 5.0
+    },
+    "schedule": {
+      "_class_name": "LinearInterpolationSchedule",
+      "pred_type": "v_lerp"
+    },
+    "sampler": {
+      "_class_name": "EulerSampler"
+    }
+  },
+  "meta_model": {
+    "_class_name": "Wan2_1_I2V",
+    "hybrid_gpu_num": 2,
+    "ulysses_size": 2,
+    "fsdp": {
+      "reduce_dtype": "float32",
+      "buffer_dtype": "float32",
+      "sync_module_states": true,
+      "cpu_offload": false,
+      "sharding_strategy": "HYBRID_SHARD",
+      "use_orig_params": false,
+      "auto_wrap_policy": null
+    },
+    "autocast": {
+      "enabled": true,
+      "dtype": "bfloat16"
+    },
+    "backbone": {
+      "_class_name": "WanModel",
+      "config": {
+        "__inherit__": "configs/meta_model/wan2.1_i2v_14b/dit.jsonc"
+      },
+      "weight": "./checkpoints/PF_Wan/backbone.pth",
+      "weight_dtype": "bfloat16",
+      "training_state": false,
+      "requires_grad": false,
+      "grad_enabled": false,
+      "fsdp": {
+        "enabled": true,
+        "auto_wrap_policy": "dit_wrap_policy"
+      }
+    },
+    "text_encoder": {
+      "_class_name": "T5Encoder",
+      "config": {
+        "__inherit__": "configs/meta_model/wan2.1_i2v_14b/t5_model.jsonc"
+      },
+      "weight": "./checkpoints/PF_Wan/models_t5_umt5-xxl-enc-bf16.pth",
+      "weight_dtype": "bfloat16",
+      "training_state": false,
+      "requires_grad": false,
+      "grad_enabled": false,
+      "fsdp": {
+        "enabled": true,
+        "auto_wrap_policy": "t5_wrap_policy"
+      }
+    },
+    "tokenizer": {
+      "_class_name": "HuggingfaceTokenizer",
+      "config": {
+        "__inherit__": "configs/meta_model/wan2.1_i2v_14b/t5_tokenizer.jsonc"
+      },
+      "override_list": [
+        "config.name",
+        "./checkpoints/PF_Wan/google/umt5-xxl"
+      ]
+    },
+    "vae": {
+      "_class_name": "WanVAE",
+      "config": {
+        "__inherit__": "configs/meta_model/wan2.1_i2v_14b/vae.jsonc"
+      },
+      "weight": "./checkpoints/PF_Wan/Wan2.1_VAE.pth",
+      "weight_dtype": "float32",
+      "training_state": false,
+      "requires_grad": false,
+      "grad_enabled": false,
+      "wrapped_func": [
+        "encode",
+        "decode"
+      ],
+      "autocast": {
+        "enabled": true,
+        "dtype": "float32"
+      }
+    }
+  }
+}

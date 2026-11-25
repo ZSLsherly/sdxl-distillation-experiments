@@ -1,0 +1,8 @@
+{
+  "train.py": "82fb7c77bbdc7a5788d840b9763c84c9c65f18276fb3a09f0d2ca60f93e2bad0",
+  "batching.py": "228068e6976901a6b452e6504b4dd572558c180d0e44cdb78685e7a58c48b137",
+  "objectives.py": "f514a2ecdafcf7f5e1d5729d71b309e9d7038c6ff5a7354715e1f76447fbfefd",
+  "pixel.py": "bd3483dcecfb1f9cbce6681872e6df61c14d1491556ac92bfd1bb11356e62ba1",
+  "training_state.py": "da012b51247fda995520ec331a302607b3d69e7eda7ff9c80c3611d3d6a6dca2",
+  "test_batching.py": "deb9bd9313e92d3f613ef739c8e22a23ea7d9dd768ba0289f043c724b5aaeaa9"
+}

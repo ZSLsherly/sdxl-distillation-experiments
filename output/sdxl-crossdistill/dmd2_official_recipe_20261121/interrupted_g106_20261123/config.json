@@ -1,0 +1,62 @@
+{
+  "name": "DMD2_official_optimizer_precision_10K_G160_F800",
+  "model_id": "/data1/shenglin.zeng/sdxl_eval_uniform_20261025/models/sdxl-base-1.0",
+  "data_dir": "/data1/shenglin.zeng/sdxl_eval_uniform_20261025/datasets/parallel_10k_seed20261018",
+  "seed": 20261017,
+  "batch": 64,
+  "student_updates": 160,
+  "fake_updates": 800,
+  "fake_to_student": 5,
+  "student_lr": 5e-07,
+  "fake_lr": 5e-07,
+  "betas": [
+    0.9,
+    0.999
+  ],
+  "weight_decay": 0.01,
+  "grad_clip": 10.0,
+  "teacher_cfg": 8.0,
+  "gen_gan_weight": 0.005,
+  "fake_gan_weight": 0.01,
+  "gpus": [
+    3,
+    7
+  ],
+  "gpu_uuids": [
+    "GPU-c374184a-ab5a-681a-ed48-025bed2da39b",
+    "GPU-df453630-a9d5-be2e-43db-e0abc1834da2"
+  ],
+  "initialization": "original SDXL fp16 source weights converted to FP32 train parameters; no distilled weights",
+  "runtime": "FSDP2 FULL_SHARD; student/fake/head FP32 parameters and optimizer; upstream selective BF16 autocast; teacher BF16; no CPU offload",
+  "method": "official DMD2 clean DM + native shared fake GAN head",
+  "upstream_commit": "8d8fa55633d47cfb81bbc7a892e7248f9518763f",
+  "evaluation": "official stochastic four-step sampler; eight fixed cases at G0/every2G; full COCO10K comparison after G160",
+  "resource_policy": "Require idle healthy GPUs before launch; do not stop because another process arrives later; never terminate other jobs.",
+  "warmup_scheduler_steps": 500,
+  "warmup_reference_processes": 64,
+  "warmup_semantics": "lr(iter)=base_lr*min(iter*64/500,1); reproduce official 64-process Accelerate0.23 trajectory independently of this job GPU count",
+  "retained_differences": "10K cached dataset, batch64, G160/F800, FP16-source initialization, FSDP2/checkpointing and student DM upper979 retained from prior run",
+  "micro": 2,
+  "accumulation": 16,
+  "world": 2,
+  "target_G": 160,
+  "target_F": 800,
+  "smoke": false,
+  "inference_schedule": [
+    999,
+    749,
+    499,
+    249
+  ],
+  "training_rollout": "native stochastic backward simulation",
+  "actual_fake_noise_range": [
+    0,
+    999
+  ],
+  "student_DM_range": [
+    20,
+    979
+  ],
+  "PCM": 0,
+  "mix": 0
+}

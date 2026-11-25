@@ -1,0 +1,180 @@
+{
+  "root": "/data3/shenglin.zeng/sdxl_turning_ablation_20261028",
+  "run": "turning_batch64_g160_4gpu_teacher_shard_20261029/normalized_u_validation",
+  "resume": null,
+  "init_student": null,
+  "objective": "boundary",
+  "boundary_margin": 10,
+  "fake_weight_max": 10.0,
+  "grad_clip": 1.0,
+  "sam_path": "models/sam-vit-base",
+  "gan_ramp_updates": 0,
+  "calibrate_only": 0,
+  "resume_repack": false,
+  "data_dir": "/data3/shenglin.zeng/sdxl_turning_ablation_20261028/datasets/parallel_10k_seed20261018",
+  "variant": "dmd_only",
+  "student_stages": [
+    2,
+    3,
+    4
+  ],
+  "dmd_stages": [
+    2,
+    3,
+    4
+  ],
+  "gan_stages": [],
+  "fake_policy": "crossdistill",
+  "gan_loss": "hinge",
+  "discriminator": "hybrid",
+  "gan_view": "tile",
+  "gan_augment": "d_only",
+  "schedule": [
+    999,
+    749,
+    499,
+    249,
+    -1
+  ],
+  "pcm_boundary": 749,
+  "dmd_t_max": 919,
+  "turning_profile": "/data3/shenglin.zeng/sdxl_turning_ablation_20261028/code/sdxl_research/turning_profiles/normalized_u_512.json",
+  "pcm_weight": 1.0,
+  "d_grad_bucket_mb": 0,
+  "fake_adam_foreach": false,
+  "student_adam_foreach": false,
+  "compile_teacher": false,
+  "shard_teacher": true,
+  "control_mode": "cycle",
+  "trace_cycles": 0,
+  "benchmark_cycles": 9,
+  "benchmark_warmup": 3,
+  "batch": 64,
+  "micro_batch": 1,
+  "vae_batch": 1,
+  "rollout_batch": 2,
+  "batched_teacher_cfg": false,
+  "shard_granularity": "fine",
+  "hours": 3.0,
+  "max_student_updates": 2,
+  "student_lr": 1e-06,
+  "fake_lr": 5e-06,
+  "d_lr": 0.0001,
+  "fake_updates": 2,
+  "gan_weight": 0.0,
+  "teacher_cfg": 8.0,
+  "fake_offload": false,
+  "offload_student": false,
+  "offload_student_optimizer": false,
+  "eval_every_samples": 128,
+  "snapshot_seconds": 1800,
+  "save_every_updates": 2,
+  "seed": 20261017,
+  "profile": false,
+  "gradient_probe_every": 0,
+  "benchmark": false,
+  "benchmark_batch": 64,
+  "world_size": 4,
+  "effective_batch": 64,
+  "accumulation": 16,
+  "microbatch_per_gpu": 1,
+  "requested_training_batch": 64,
+  "pcm_t_range": [
+    770,
+    999
+  ],
+  "student_dmd_t_range": {
+    "2": [
+      509,
+      739
+    ],
+    "3": [
+      259,
+      489
+    ],
+    "4": [
+      20,
+      239
+    ]
+  },
+  "runtime_versions": {
+    "torch": "2.5.1+cu121",
+    "cuda": "12.1",
+    "device": "NVIDIA GeForce RTX 4090"
+  },
+  "student_cfg": 1,
+  "train_count": 10000,
+  "initialization": "untouched SDXL Base; independent student/fake/D per run",
+  "checkpoint_kind": "periodic BF16 student weights; final FP32 student/fake/D + optimizers/counters/RNG",
+  "spectral_norm_policy": "not used by SAM heads",
+  "fake_rollout_batches_per_update_per_rank": 8,
+  "rollout_cache": "one local effective fake batch; GPU latents only plus its existing batch inputs; discarded before next student update",
+  "batch_semantics": "mean loss / accumulation, followed by FSDP mean over ranks",
+  "augmentation": "whole-image SAM; no flips or latent crops",
+  "fake_stage_policy": "boundary_2_3_4_v1",
+  "experiment_modules": {
+    "objective": "boundary_v1",
+    "margin": 10,
+    "ranges": {
+      "2": [
+        509,
+        739
+      ],
+      "3": [
+        259,
+        489
+      ],
+      "4": [
+        20,
+        239
+      ]
+    },
+    "fake_weight_max": 10.0,
+    "grad_clip": 1.0,
+    "student": "random middle 2/3 plus terminal4 each G",
+    "fake": "cycle 2/3/4",
+    "terminal_dmd": true,
+    "gan": false,
+    "discriminator": "hybrid",
+    "gan_view": "tile",
+    "gan_loss": "hinge",
+    "gan_augment": "d_only",
+    "gan_ramp_updates": 0,
+    "sam_path": "models/sam-vit-base",
+    "fake_normalization": "conditional epsilon; clipped inverse variance",
+    "student_normalization": "boundary posterior mean; 0.5 MSE"
+  },
+  "D_fake_stage": null,
+  "discriminator_enabled": false,
+  "benchmark_protocol": null,
+  "turning_sampling": {
+    "name": "normalized_u",
+    "metric": "theta / abs(delta_u)",
+    "beta": 0.3,
+    "support": [
+      20,
+      919
+    ],
+    "source_sha256": "1ec459710c97f3a27092a0b8e57a4353be740a9edf0437c5e8629f06e43b646e",
+    "smoothing": "Interpolate onto 256 uniform physical-u points, Gaussian bandwidth .015, then interpolate onto native integer t; same for both arms",
+    "offset_rule": "0.1 * median of each smoothed profile on [20,919]",
+    "exponent": 2,
+    "importance_correction": false,
+    "distribution_sha256": "6f5a477e6aa7a9a8a7d78cec689789ead742009ce047b389d0a35225805f5141",
+    "scope": "student DMD re-noise only; fake/PCM/GAN routing unchanged",
+    "conditional_rule": "For boundary DM, rebuild 70/30 mixture within each valid stage range; offset is 0.1 times that range median"
+  },
+  "D_updates_per_G": 0,
+  "latent_shape": [
+    4,
+    128,
+    128
+  ],
+  "optimizer_settings": {
+    "betas": [
+      0.0,
+      0.999
+    ],
+    "weight_decay": 0.0
+  }
+}

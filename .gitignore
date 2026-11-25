@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+login.txt
+*.pem
+*.key
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+wandb/

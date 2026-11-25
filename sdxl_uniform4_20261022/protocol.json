@@ -1,0 +1,74 @@
+{
+  "status": "prepared; GPU short test NOT run; target GPU4/5 require reset and GPU6 occupied at preflight",
+  "server": "172.18.132.41",
+  "physical_gpus": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "baseline": "gan_stage_joint4_4gpu/joint4_20261019T122237_4gpu_mb16",
+  "initialization": "original SDXL; independent student/fake/discriminator; no resume",
+  "schedule": [
+    999,
+    749,
+    499,
+    249,
+    -1
+  ],
+  "sampler": "original deterministic VP/DDIM jump, unchanged",
+  "student_dmd_t_range": [
+    20,
+    749
+  ],
+  "pcm_t_range": [
+    770,
+    999
+  ],
+  "pcm_boundary": 749,
+  "fake_t_range": [
+    0,
+    999
+  ],
+  "pcm_teacher_substeps": [
+    10,
+    10
+  ],
+  "student_stage_cycle": [
+    2,
+    3,
+    4
+  ],
+  "gan_stages": [
+    4
+  ],
+  "pcm_weight": 10,
+  "gan_weight": 0.005274229682981968,
+  "student_lr": 1e-06,
+  "fake_lr": 1e-06,
+  "d_lr": 0.0001,
+  "teacher_cfg": 8,
+  "student_cfg": 1,
+  "seed": 20261017,
+  "effective_batch": 64,
+  "world_size": 4,
+  "micro_batch": 16,
+  "rollout_batch": 16,
+  "vae_batch": 4,
+  "fake_updates_per_student": 5,
+  "max_student_updates": 160,
+  "save_every_updates": 40,
+  "eval_every_updates": 2,
+  "data": "same datasets/parallel_10k_seed20261018 prepared.pt and manifest.json",
+  "final_checkpoint": "full FP32 student/fake/D, optimizer states, counters, RNG",
+  "short_test": "fresh separate 4-student-update run with full 5:1 fake/D schedule, includes R1, GAN stage4, periodic evaluation and final save; then fresh G160 only after successful review",
+  "interpretation": "uniform four-stage partition; TM boundary and its associated sampling ranges move together; not a sampler-only ablation",
+  "source_sha256": {
+    "train.py": "bdd354be051bdc807d72fef5f2f3bf3325d77192718208086b24c58cdf24003d",
+    "batching.py": "f42eb857b0c33a38fee1ea75d3cd84361a9721592bc5dc85f09e783889436710",
+    "pixel.py": "bd3483dcecfb1f9cbce6681872e6df61c14d1491556ac92bfd1bb11356e62ba1",
+    "objectives.py": "f514a2ecdafcf7f5e1d5729d71b309e9d7038c6ff5a7354715e1f76447fbfefd",
+    "training_state.py": "832637faf8fae61a84d66246ef2592d76dfc0a8fcc15404aa18f38d1171e3124",
+    "test_batching.py": "deb9bd9313e92d3f613ef739c8e22a23ea7d9dd768ba0289f043c724b5aaeaa9"
+  }
+}

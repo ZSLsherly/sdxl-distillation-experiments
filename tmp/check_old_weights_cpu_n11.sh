@@ -1,0 +1,1 @@
+env CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 /data1/shenglin.zeng/teacher_turning_20261026/env/bin/python -u /data1/shenglin.zeng/coco_missing_20261111/code/check_old_weights_cpu.py

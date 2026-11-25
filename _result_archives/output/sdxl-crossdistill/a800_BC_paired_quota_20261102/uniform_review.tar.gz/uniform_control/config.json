@@ -1,0 +1,168 @@
+{
+  "root": "/root/sdxl_research",
+  "run": "turning_BC_paired_quota_20261102/uniform_control",
+  "resume": null,
+  "init_student": null,
+  "objective": "boundary",
+  "boundary_noise_max": 979,
+  "boundary_margin": 10,
+  "fake_weight_max": 10.0,
+  "grad_clip": 1.0,
+  "sam_path": "models/sam-vit-base",
+  "gan_ramp_updates": 0,
+  "calibrate_only": 0,
+  "resume_repack": false,
+  "data_dir": "/root/sdxl_research/datasets/parallel_10k_seed20261018",
+  "variant": "dmd_only",
+  "student_stages": [
+    2,
+    3,
+    4
+  ],
+  "dmd_stages": [
+    2,
+    3,
+    4
+  ],
+  "gan_stages": [],
+  "fake_policy": "crossdistill",
+  "gan_loss": "hinge",
+  "discriminator": "hybrid",
+  "gan_view": "tile",
+  "gan_augment": "d_only",
+  "schedule": [
+    999,
+    749,
+    499,
+    249,
+    -1
+  ],
+  "pcm_boundary": 749,
+  "dmd_t_max": 979,
+  "pair_fake_stages": true,
+  "match_fake_prior": false,
+  "turning_profile": null,
+  "pcm_weight": 1.0,
+  "d_grad_bucket_mb": 0,
+  "fake_adam_foreach": false,
+  "student_adam_foreach": false,
+  "compile_teacher": false,
+  "shard_teacher": true,
+  "control_mode": "cycle",
+  "trace_cycles": 0,
+  "benchmark_cycles": 9,
+  "benchmark_warmup": 3,
+  "batch": 64,
+  "micro_batch": 16,
+  "vae_batch": 1,
+  "rollout_batch": 8,
+  "batched_teacher_cfg": false,
+  "shard_granularity": "fine",
+  "hours": 96.0,
+  "max_student_updates": 160,
+  "student_lr": 1e-06,
+  "fake_lr": 5e-06,
+  "d_lr": 0.0001,
+  "fake_updates": 2,
+  "gan_weight": 0.0,
+  "teacher_cfg": 8.0,
+  "fake_offload": false,
+  "offload_student": false,
+  "offload_student_optimizer": true,
+  "eval_every_samples": 128,
+  "snapshot_seconds": 1800,
+  "checkpoint_mode": "final-weights",
+  "save_every_updates": 0,
+  "seed": 20261017,
+  "profile": false,
+  "gradient_probe_every": 0,
+  "benchmark": false,
+  "benchmark_batch": 64,
+  "world_size": 1,
+  "effective_batch": 64,
+  "accumulation": 4,
+  "microbatch_per_gpu": 16,
+  "requested_training_batch": 64,
+  "pcm_t_range": [
+    770,
+    999
+  ],
+  "student_dmd_t_range": {
+    "2": [
+      509,
+      979
+    ],
+    "3": [
+      259,
+      979
+    ],
+    "4": [
+      20,
+      979
+    ]
+  },
+  "runtime_versions": {
+    "torch": "2.5.1+cu121",
+    "cuda": "12.1",
+    "device": "NVIDIA A800 80GB PCIe"
+  },
+  "student_cfg": 1,
+  "train_count": 10000,
+  "initialization": "untouched SDXL Base; independent student/fake/D per run",
+  "checkpoint_kind": "one final BF16 student snapshot; inference only",
+  "spectral_norm_policy": "not used by SAM heads",
+  "fake_rollout_batches_per_update_per_rank": 8,
+  "rollout_cache": "one local effective fake batch; GPU latents only plus its existing batch inputs; discarded before next student update",
+  "batch_semantics": "mean loss / accumulation, followed by FSDP mean over ranks",
+  "augmentation": "whole-image SAM; no flips or latent crops",
+  "fake_stage_policy": "boundary_paired_middle_terminal_v1",
+  "experiment_modules": {
+    "objective": "boundary_v1",
+    "margin": 10,
+    "ranges": {
+      "2": [
+        509,
+        979
+      ],
+      "3": [
+        259,
+        979
+      ],
+      "4": [
+        20,
+        979
+      ]
+    },
+    "fake_weight_max": 10.0,
+    "grad_clip": 1.0,
+    "student": "random middle 2/3 plus terminal4 each G",
+    "fake": "selected middle then terminal each G",
+    "terminal_dmd": true,
+    "gan": false,
+    "discriminator": "hybrid",
+    "gan_view": "tile",
+    "gan_loss": "hinge",
+    "gan_augment": "d_only",
+    "gan_ramp_updates": 0,
+    "sam_path": "models/sam-vit-base",
+    "fake_normalization": "conditional epsilon; clipped inverse variance",
+    "student_normalization": "boundary posterior mean; 0.5 MSE"
+  },
+  "D_fake_stage": null,
+  "discriminator_enabled": false,
+  "benchmark_protocol": null,
+  "turning_sampling": null,
+  "D_updates_per_G": 0,
+  "latent_shape": [
+    4,
+    128,
+    128
+  ],
+  "optimizer_settings": {
+    "betas": [
+      0.0,
+      0.999
+    ],
+    "weight_decay": 0.0
+  }
+}

@@ -1,0 +1,96 @@
+Boundary DM + terminal Pixel GAN (implementation: 2026-10-25)
+
+Status
+------
+Implemented in the existing trainer as --objective boundary. The default clean
+objective and its old configs remain available. This is a VP conditional-score
+adaptation inspired by TDM/Phased DMD, not a claimed exact reproduction of either.
+No remote training or GPU validation was performed for this implementation.
+
+Routing
+-------
+Student: one random middle phase (2 or 3) AND terminal phase 4 every G update;
+PCM once per G. Local backwards detach between calls. One optimizer step only.
+Fake: cycles boundary phases 2/3/4 with two updates per G in the short config.
+D: one update per G, on complete four-step samples only. Independent from fake.
+The high-noise relay is detached, but shared student parameters are not isolated.
+
+At 999/749/499/249, re-noise ranges are:
+  phase2 output x499 -> u in [509,739]
+  phase3 output x249 -> u in [259,489]
+  phase4 clean x0   -> u in [20,239]
+Clean boundary is index -1, alpha=1 and sigma=0. Scheduler index 0 is NOT clean.
+
+Math
+----
+a=alpha_u/alpha_s; b^2=sigma_u^2-a^2*sigma_s^2; x_u=a*y_s+b*epsilon.
+Fake epsilon target = sigma_u/b * epsilon, not epsilon.
+Implementation: (b*epsilon_fake-sigma_u*epsilon)^2 * min(1/b^2,10).
+No additional TDM importance weight is multiplied into this conditional target.
+
+Raw reverse-KL direction: a*(score_fake-score_teacher).
+Student normalization uses the conditional posterior mean at the boundary:
+  m_T = (x_u+b^2*score_teacher)/a
+  Z = mean(abs(y_s-m_T)), floored at 1e-5
+  g = [b^2/a^2/Z] * a*(score_fake-score_teacher)
+  loss = 0.5*mean((y_s-stopgrad(y_s-g))^2)
+All scores, Z and g are stopped; only y_s is differentiated. This normalized
+surrogate is not a numerical KL value. At s=-1 it equals DMD2's clean direction.
+
+Pixel GAN
+---------
+SAM ViT-B-compatible 12-layer encoder, outputs 3/6/9/12, frozen. Four trainable
+Conv/GN/SiLU heads; hinge, feature-space R1=1e-5 each D update. No RGB side branch.
+Both generated and cached-real latents are FULLY VAE-decoded. The real branch
+currently uses VAE reconstructions from prepared.pt, not original RGB file reads.
+SAM uses whole images; the legacy gan_view=full still means a crop AFTER full
+decoding. New gan_view=whole means no crop. VAE/SAM stay differentiable to G inputs.
+Pretrained SAM must be a local Transformers-format safetensors directory at
+models/sam-vit-base (or --sam-path). No automatic model download/fallback occurs.
+
+Short configuration and calibration
+-----------------------------------
+configs/boundary_joint4_short.json is deliberately only batch8 / micro1 / 4G.
+pcm_weight=1, gan_weight=.005 and four-update ramp are DEBUG starting values,
+not calibrated paper settings. It reuses the existing prepared dataset for the
+short test; no new 50K dataset is collected by this change.
+launch.py still only PRINTS the command unless --execute is explicitly supplied.
+An actual GPU launch must first check GPU processes/free memory; no specific GPU
+indices are reserved or assumed idle by this document.
+
+After a real short run has trained D, a fresh output run may load its final state
+with the same config plus --resume <training_state_dir> --calibrate-only 32.
+This performs 32 microbatch probes per rank, NO optimizer updates and NO snapshots.
+It writes calibration.json with parameter-gradient norm ratios:
+  suggested PCM = median(norm(middleDM+terminalDM)/norm(PCM))
+  suggested GAN = .2*median(norm(terminalDM)/norm(GAN))
+It does not silently apply these suggestions. Inspect ratios/critic behavior,
+then explicitly put chosen weights into a new experiment config.
+The FSDP/CUDA calibration path still requires real-hardware validation.
+
+Resolution curriculum
+---------------------
+Latent shape and conditioning come from prepared.pt, so both native 512 and 1024
+prepared datasets can be used. Do NOT resize 1024 latents and call them 512 data.
+At a resolution switch, --init-student <complete_training_state_dir> loads only
+student weights at the same sharding/world layout; fake/D/optimizers start fresh.
+There is no automatic 2000G curriculum launcher. Resume means exact continuation
+and rejects changes to scientific settings; init-student means a new experiment.
+
+Deliberately deferred
+---------------------
+Two-step terminal GAN unrolling, DyMD image prior, fake EMA injection, reward RL,
+formal 50K data preparation and long training. --objective boundary rejects
+joint34 rather than silently using the old intermediate-clean GAN interpretation.
+
+Verification
+------------
+test_boundary.py: VP marginal transport, analytic Gaussian score optimum,
+negative control with naive epsilon target, KL finite differences, clean-boundary
+limit, gradient isolation, chunked/local backward equivalence, real tiny SAM and
+VAE gradients, checkpoint-format loading, and parser/protocol checks.
+smoke_boundary_cpu.py: actual tiny random diffusers UNet/VAE and SAM architecture,
+4G + 8fake + 4D. Synthetic CPU evidence only, not trained-SDXL quality/VRAM evidence.
+
+Primary API reference for the SAM loader:
+https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/sam

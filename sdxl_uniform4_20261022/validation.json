@@ -1,0 +1,11 @@
+{
+  "date": "2026-10-22",
+  "cpu_tests": {"command": "CUDA_VISIBLE_DEVICES='' python -m unittest -v test_schedule test_batching", "passed": 22, "seconds": 12.295, "host": "172.18.33.60", "gpu_used": false},
+  "gpu_short_test": "not started",
+  "formal_training": "not started",
+  "target_host": "172.18.132.41",
+  "target_physical_gpus": [4, 5, 6, 7],
+  "preflight_blocker": "GPU4 and GPU5 again report GPU requires reset; GPU6 has another active compute process; topology query fails",
+  "target_environment": "Existing private sherly environment has torch 2.10.0+cu128 and lacks diffusers; matching baseline environment not yet deployed",
+  "server_changes": "No GPU reset, reboot, termination of other jobs, or GPU training launch. Independent source copy uploaded to original A100 project for CPU-only validation."
+}

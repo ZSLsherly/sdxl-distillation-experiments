@@ -1,0 +1,75 @@
+Replaceable research modules — prepared, not a selected experiment plan
+=====================================================================
+
+Defaults preserve the audit-fixed CrossDistill-style SDXL recipe. No registry,
+plugin loader, automatic sweep or training framework has been introduced.
+All choices are explicit CLI flags and JSON config fields. --variant is now
+a preset: explicit stage lists override it, and resolved lists are recorded.
+
+1. Stage and loss routing: stage_policy.py
+   student_stages: unique subset/order of [2,3,4], default [2,3,4].
+   dmd_stages / gan_stages: optional overrides; [] disables that loss.
+   Every selected student stage must have DMD, GAN, or both. Stage1 remains PCM.
+   fake_policy:
+     crossdistill   default critic1/2/3/4; shared mixture score.
+     student_cycle critic follows configured student stages, by fake counter.
+     match_student all five fake updates use the current G stage; shared fake
+                   still has cross-stage history, not a separate conditional score.
+     final         old final-only critic, for diagnostic comparison only; it
+                   reintroduces the reviewed coverage limitation for G2/G3.
+   PCM weight and schedule are existing options. pcm_weight=0 removes its gradient,
+   but currently still computes its forward/backward; not a throughput optimization.
+   GAN D always receives FINAL four-step negative samples, even with joint34.
+
+2. GAN objectives: gan_losses.py
+   gan_loss=hinge (default) or logistic (non-saturating G).
+   D and G objectives switch together; existing R1 and optimizer settings remain.
+   Loss scales differ: the same GAN weight is a starting control, not a calibrated
+   equal-gradient coefficient. Log names distinguish D_hinge and D_logistic.
+
+3. Discriminator: pixel.py
+   discriminator=hybrid (default frozen DINO + RGB heads) or rgb.
+   rgb does not load DINO and returns its own full score. It is a practical
+   texture ablation, not an asserted improvement. RGB and hybrid logit scales
+   differ; inspect D/G gradients before adopting a long run.
+
+4. Image views and augmentation: image_views.py
+   gan_view=tile preserves the existing 48x48 latent tile + 64px halo.
+   gan_view=full decodes the full image, then crops the identical 256px rectangle.
+   Both D and G use the chosen view. Full decoding uses one image at a time and
+   checkpointing for G, but can STILL exceed GPU memory. It is an expensive
+   GroupNorm/texture control and has no full-SDXL GPU validation yet.
+   gan_augment=d_only (default), both (D and G), or none. Existing per-sample
+   crop/flip RNG is reused; no new randomness is drawn by this module.
+
+Examples: configs/modules/*.json are complete standalone configs.
+  baseline, rgb_only, logistic_gan, symmetric_flip, full_decode_crop,
+  critic_student_cycle, critic_match_student each change zero/one flag from the
+  same uniform_joint4 baseline. last_step_gan_only changes stage routing as a
+  separate recipe: only G stage4 GAN plus existing PCM. It does NOT mean PCM off.
+
+Preview only:
+  python sdxl_research/launch.py --root ROOT --gpus 0,1 \
+    --config sdxl_research/configs/modules/rgb_only.json --short
+Execution requires --execute and idle approved cards. No execution is scheduled.
+--short with resume is rejected, fixing the second audit's zero-update edge case.
+
+Resume and comparison:
+Resolved experiment_modules are saved and compared on resume. Checkpoints from
+the pre-module version lack that metadata and require a fresh run here; they
+remain usable by the original evaluator. Do not edit metadata to force resume.
+Periodic weights and final full state keep their existing formats.
+An explicit resume_repack=true permits changing micro_batch and rollout_batch
+while preserving global batch, world size, model/optimizer state and counters.
+It retains per-sample random streams; floating-point results need not be bitwise
+identical because kernel batch shapes and accumulation order change.
+Use one-factor controls first, common data/seeds/G counts and report wall time.
+Different student cycles change the counts of each supervised stage. Do not
+compare raw G counts alone as equal work. There is no automatic combinatorial sweep.
+
+Validation:
+CPU tests cover default routing/loss equivalence, logistic gradient directions,
+view coordinates/input gradients, RGB-only paths, serialization and short/resume.
+This does not prove SDXL multi-GPU throughput, full-view memory safety or quality.
+SD3-Medium/DiT adapters and new teacher/model loaders are not implemented here;
+those require separate scheduler, conditioning and parameterization work.

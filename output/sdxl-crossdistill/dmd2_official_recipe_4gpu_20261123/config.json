@@ -1,0 +1,48 @@
+{
+  "name": "DMD2_official_recipe_4gpu_restart_20261123",
+  "model_id": "/data1/shenglin.zeng/sdxl_eval_uniform_20261025/models/sdxl-base-1.0",
+  "data_dir": "/data1/shenglin.zeng/sdxl_eval_uniform_20261025/datasets/parallel_10k_seed20261018",
+  "seed": 20261017,
+  "batch": 64,
+  "student_updates": 160,
+  "fake_updates": 800,
+  "fake_to_student": 5,
+  "student_lr": 5E-07,
+  "fake_lr": 5E-07,
+  "betas": [
+    0.9,
+    0.999
+  ],
+  "weight_decay": 0.01,
+  "grad_clip": 10.0,
+  "teacher_cfg": 8.0,
+  "gen_gan_weight": 0.005,
+  "fake_gan_weight": 0.01,
+  "gpus": [
+    1,
+    2,
+    3,
+    5
+  ],
+  "gpu_uuids": [
+    "GPU-dee80cca-d29a-9086-d006-b76ba6ee093e",
+    "GPU-7328ece9-841e-484d-9e72-d5b762fdce95",
+    "GPU-c374184a-ab5a-681a-ed48-025bed2da39b",
+    "GPU-4fba4d7f-66e5-aa77-7210-3803fe7190df"
+  ],
+  "initialization": "original SDXL fp16 source weights converted to FP32 train parameters; no distilled weights",
+  "runtime": "FSDP2 FULL_SHARD; student/fake/head FP32 parameters and optimizer; upstream selective BF16 autocast; teacher BF16; no CPU offload",
+  "method": "official DMD2 clean DM + shared fake-UNet native GAN head; no PCM, no boundary target, no fake parameter mixing",
+  "upstream_commit": "8d8fa55633d47cfb81bbc7a892e7248f9518763f",
+  "evaluation": "official stochastic four-step sampler; eight fixed cases at G0/every2G; full COCO10K comparison after G160",
+  "resource_policy": "Require idle healthy GPUs before launch; do not stop because another process arrives later; never terminate other jobs.",
+  "warmup_scheduler_steps": 500,
+  "warmup_reference_processes": 64,
+  "warmup_semantics": "lr(iter)=base_lr*min(iter*64/500,1); reproduce official 64-process Accelerate0.23 trajectory independently of this job GPU count",
+  "retained_differences": "10K cached dataset, batch64, G160/F800, FP16-source initialization, FSDP2/checkpointing and student DM upper979 retained from prior run",
+  "smoke_max_allocated_GiB": 42.0,
+  "smoke_micro_candidates": [
+    16
+  ],
+  "checkpoint_policy": "final inference weights only; user reconfirmed 2026-11-23"
+}

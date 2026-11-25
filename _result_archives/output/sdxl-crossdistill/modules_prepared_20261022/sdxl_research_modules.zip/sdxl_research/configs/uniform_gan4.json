@@ -1,0 +1,31 @@
+{
+  "variant": "gan4",
+  "data_dir": "datasets/parallel_10k_seed20261018",
+  "batch": 64,
+  "micro_batch": 16,
+  "rollout_batch": 16,
+  "vae_batch": 4,
+  "max_student_updates": 160,
+  "save_every_updates": 40,
+  "eval_every_samples": 128,
+  "hours": 24,
+  "student_lr": 1e-06,
+  "fake_lr": 1e-06,
+  "d_lr": 0.0001,
+  "fake_updates": 5,
+  "gan_weight": 0.005274229682981968,
+  "teacher_cfg": 8,
+  "seed": 20261017,
+  "pcm_weight": 10,
+  "schedule": [
+    999,
+    749,
+    499,
+    249
+  ],
+  "dmd_t_max": 919,
+  "fake_offload": true,
+  "shard_granularity": "fine",
+  "d_grad_bucket_mb": 0,
+  "control_mode": "legacy"
+}

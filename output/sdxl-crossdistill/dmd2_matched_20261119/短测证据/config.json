@@ -1,0 +1,61 @@
+{
+  "name": "DMD2_matched_A_10K_G160_F800",
+  "model_id": "/data1/shenglin.zeng/sdxl_eval_uniform_20261025/models/sdxl-base-1.0",
+  "data_dir": "/data1/shenglin.zeng/sdxl_eval_uniform_20261025/datasets/parallel_10k_seed20261018",
+  "seed": 20261017,
+  "batch": 64,
+  "student_updates": 160,
+  "fake_updates": 800,
+  "fake_to_student": 5,
+  "student_lr": 1e-06,
+  "fake_lr": 5e-06,
+  "betas": [
+    0.0,
+    0.999
+  ],
+  "weight_decay": 0.0,
+  "grad_clip": 1.0,
+  "teacher_cfg": 8.0,
+  "gen_gan_weight": 0.005,
+  "fake_gan_weight": 0.01,
+  "gpus": [
+    0,
+    1,
+    3,
+    5
+  ],
+  "gpu_uuids": [
+    "GPU-3a1e6a0e-9fab-18ef-c543-30066e01e383",
+    "GPU-dee80cca-d29a-9086-d006-b76ba6ee093e",
+    "GPU-c374184a-ab5a-681a-ed48-025bed2da39b",
+    "GPU-4fba4d7f-66e5-aa77-7210-3803fe7190df"
+  ],
+  "initialization": "original SDXL fp16 source weights converted to FP32 train parameters; no distilled weights",
+  "runtime": "PyTorch 2.5.1 FSDP2 FULL_SHARD, BF16 forward, FP32 gradients/Adam; no CPU offload",
+  "method": "official DMD2 clean DM + native shared fake GAN head",
+  "upstream_commit": "8d8fa55633d47cfb81bbc7a892e7248f9518763f",
+  "evaluation": "same fixed 8 train/holdout images at G0 and every2G; no automatic COCO10K",
+  "micro": 16,
+  "accumulation": 1,
+  "world": 4,
+  "target_G": 2,
+  "target_F": 10,
+  "smoke": true,
+  "inference_schedule": [
+    999,
+    749,
+    499,
+    249
+  ],
+  "training_rollout": "native stochastic backward simulation",
+  "actual_fake_noise_range": [
+    0,
+    999
+  ],
+  "student_DM_range": [
+    20,
+    979
+  ],
+  "PCM": 0,
+  "mix": 0
+}

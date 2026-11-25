@@ -1,0 +1,125 @@
+--- previous/train_matched.py
++++ official_recipe/train_matched.py
+@@ -51,10 +51,14 @@
+     parser.add_argument('--micro',type=int,default=16);parser.add_argument('--updates',type=int,default=160)
+     parser.add_argument('--smoke',action='store_true');a=parser.parse_args()
+     cfg=json.loads((a.root/'config.json').read_text());seed=cfg['seed']
++    # Official train_sd.py enables TF32. FP32 parameter/activation dtype does
++    # not mean disabling the author's TensorFloat-32 matrix/conv kernels.
++    torch.backends.cuda.matmul.allow_tf32=True
++    torch.backends.cudnn.allow_tf32=True
+     accelerator=Accelerator(mixed_precision='no',device_placement=False,
+         kwargs_handlers=[InitProcessGroupKwargs(timeout=timedelta(minutes=20))])
+     device=accelerator.device;rank=accelerator.process_index;world=accelerator.num_processes
+-    assert world==4 and 64%(world*a.micro)==0
++    assert world in (2,4) and 64%(world*a.micro)==0
+     accum=64//(world*a.micro);mesh=init_device_mesh('cuda',(world,))
+     torch.cuda.set_device(device);torch.set_num_threads(2);torch.manual_seed(seed)
+     out=a.root/'runs'/a.run;out.mkdir(parents=True,exist_ok=True)
+@@ -82,7 +86,8 @@
+             model.feedforward_model.to(device);model.guidance_model.to(device)
+             # HF non-reentrant activation checkpointing + the project's proven FSDP2 wrappers.
+             model.guidance_model.fake_unet.enable_gradient_checkpointing()
+-            policy=MixedPrecisionPolicy(param_dtype=torch.bfloat16,reduce_dtype=torch.float32,cast_forward_inputs=True)
++            # Keep FP32 fake-score/rollout; upstream owns selective autocast.
++            policy=MixedPrecisionPolicy(param_dtype=None,reduce_dtype=torch.float32,cast_forward_inputs=False)
+             shard(model.feedforward_model,mesh,policy)
+             shard(model.guidance_model.fake_unet,mesh,policy)
+             shard(model.guidance_model.real_unet,mesh,policy)
+@@ -95,8 +100,8 @@
+         dist.barrier()
+     student_params=list(model.feedforward_model.parameters())
+     fake_params=list(model.guidance_model.fake_unet.parameters())+list(model.guidance_model.cls_pred_branch.parameters())
+-    adam=dict(betas=(0.,.999),weight_decay=0.,foreach=False)
+-    og=torch.optim.AdamW(student_params,lr=1e-6,**adam);of=torch.optim.AdamW(fake_params,lr=5e-6,**adam)
++    adam=dict(betas=tuple(cfg['betas']),weight_decay=cfg['weight_decay'],foreach=False)
++    og=torch.optim.AdamW(student_params,lr=cfg['student_lr'],**adam);of=torch.optim.AdamW(fake_params,lr=cfg['fake_lr'],**adam)
+     orders={role:random.Random(seed+offset).sample(range(10000),10000) for role,offset in [('student',0),('fake',100),('real',200)]}
+     schedule=VPSchedule(model.noise_scheduler.alphas_cumprod.to(device))
+     manifest=json.loads((data_path/'manifest.json').read_text())
+@@ -110,6 +115,22 @@
+     log=(out/f'rank{rank}.jsonl').open('w');g=f=0
+     def record(value):
+         value.update(rank=rank,time=time.time());log.write(json.dumps(value)+'\n');log.flush()
++    precision_seen={}
++    def precision_hook(role):
++        def hook(module, inputs, output):
++            amp=torch.is_autocast_enabled()
++            key=f'{role}:autocast={amp}:grad={torch.is_grad_enabled()}'
++            value=dict(input=str(inputs[0].dtype),weight=str(module.weight.dtype),output=str(output.dtype))
++            if role in ('student','fake'):
++                assert module.weight.dtype==torch.float32,(key,value)
++                if not amp:assert inputs[0].dtype==output.dtype==torch.float32,(key,value)
++            elif role=='teacher':assert module.weight.dtype==torch.bfloat16,(key,value)
++            if key not in precision_seen:
++                precision_seen[key]=value
++                write(out/f'precision_rank{rank}.json',precision_seen)
++        return hook
++    for role,net in [('student',model.feedforward_model),('fake',model.guidance_model.fake_unet),('teacher',model.guidance_model.real_unet)]:
++        net.conv_in.register_forward_hook(precision_hook(role))
+     @torch.no_grad()
+     def evaluate(update):
+         from PIL import Image
+@@ -120,20 +141,22 @@
+             for split,idx in cases[rank::world]:
+                 emb=data['prompt_embeds'][idx:idx+1].to(device,dtype=torch.float32)
+                 pooled=data['pooled_prompt_embeds'][idx:idx+1].to(device,dtype=torch.float32)
+-                x=torch.randn(1,4,128,128,device=device,generator=torch.Generator(device=device).manual_seed(102))
++                torch.manual_seed(102)
++                x=torch.randn(1,4,128,128,device=device)
+                 knots=[999,749,499,249,-1]
+                 for t,s in zip(knots[:-1],knots[1:]):
+                     tt=torch.tensor([t],device=device)
+                     with torch.autocast('cuda',dtype=torch.bfloat16):
+                         eps=model.feedforward_model(x,tt,emb,added_cond_kwargs={'text_embeds':pooled,'time_ids':model.add_time_ids}).sample.float()
+-                    x=schedule.jump(x,eps,tt,s)
++                    x0=schedule.clean(x,eps,tt)
++                    x=schedule.noise(x0,torch.randn_like(x0),s) if s>=0 else x0
+                 assert torch.isfinite(x).all()
+                 rgb=model.vae.decode(x/model.vae.config.scaling_factor).sample
+                 assert torch.isfinite(rgb).all()
+                 filename=f'{split}_{data["original_indices"][idx]}.png'
+                 Image.fromarray(((rgb[0]/2+.5).clamp(0,1).permute(1,2,0)*255).round().byte().cpu().numpy()).save(dest/filename)
+                 rows.append(dict(split=split,original_index=data['original_indices'][idx],seed=102,image=filename,prompt=data['prompts'][idx]))
+-        write(dest/f'rank{rank}.json',dict(G=update,samples=rows,sampler='shared historical deterministic DDIM4; NOT training backward simulation'))
++        write(dest/f'rank{rank}.json',dict(G=update,samples=rows,sampler='official DMD2 x0 prediction + independent Gaussian renoise; four-step; BF16 autocast evaluation'))
+         dist.barrier()
+     if rank==0:
+         write(out/'config.json',dict(cfg,micro=a.micro,accumulation=accum,world=world,target_G=a.updates,
+@@ -141,9 +164,13 @@
+               inference_schedule=[999,749,499,249],training_rollout='native stochastic backward simulation',
+               actual_fake_noise_range=[0,999],student_DM_range=[20,979],PCM=0,mix=0))
+     evaluate(0)
++    model.train()  # Official Trainer.train_one_step enters train mode.
+     torch.cuda.reset_peak_memory_stats();start=time.monotonic()
+     for iteration in range(a.updates*5):
+         tick=time.monotonic();do_g=(iteration%5==0)
++        factor=min(iteration*cfg['warmup_reference_processes']/cfg['warmup_scheduler_steps'],1.)
++        for group in og.param_groups:group['lr']=cfg['student_lr']*factor
++        for group in of.param_groups:group['lr']=cfg['fake_lr']*factor
+         selected=iteration%4 if a.smoke else random.Random(seed_for(seed,'depth',iteration,0)).randrange(4)
+         model.selected_training_step=selected
+         # One official training iteration produces G samples, optionally updates G,
+@@ -171,7 +198,7 @@
+                 del total
+             del losses,logs,b,real,noise
+         if do_g:
+-            gn=clip(student_params,1.);og.step();g+=1
++            gn=clip(student_params,cfg['grad_clip']);og.step();g+=1
+             og.zero_grad(set_to_none=True);of.zero_grad(set_to_none=True)
+         for item in cache:
+             losses,logs=model(None,None,None,generator_turn=False,guidance_turn=True,guidance_data_dict=item)
+@@ -180,11 +207,12 @@
+             (total/accum).backward()
+             fl[0]+=losses['loss_fake_mean'].detach().item()/accum;fl[1]+=losses['guidance_cls_loss'].detach().item()/accum
+             del losses,logs,total
+-        fn=clip(fake_params,1.);of.step();of.zero_grad(set_to_none=True);f+=1
++        fn=clip(fake_params,cfg['grad_clip']);of.step();of.zero_grad(set_to_none=True);f+=1
+         del cache,item
+         torch.cuda.synchronize();seconds=time.monotonic()-tick
+         vals=metrics_reduce(gl+fl)
+         record(dict(iteration=iteration,G=g,F=f,student_updated=do_g,depth=selected,
++                    student_lr=og.param_groups[0]['lr'],fake_lr=of.param_groups[0]['lr'],
+                     student_dm=vals[0],student_gan=vals[1],fake_mse=vals[2],fake_gan=vals[3],
+                     student_grad=gn if do_g else None,fake_grad=fn,seconds=seconds,
+                     peak_GiB=torch.cuda.max_memory_allocated()/2**30))
