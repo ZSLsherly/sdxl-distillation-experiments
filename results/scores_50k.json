@@ -1,0 +1,134 @@
+[
+  {
+    "model": "old_A",
+    "samples": 20000,
+    "G": 313,
+    "FID": 24.431628431379124,
+    "Patch_FID": 28.482969002812922,
+    "CLIP": 31.63254165649414,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_milestones/summary.json"
+  },
+  {
+    "model": "old_A",
+    "samples": 30000,
+    "G": 470,
+    "FID": 24.572004534623602,
+    "Patch_FID": 26.399251281216095,
+    "CLIP": 31.627063751220703,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_milestones/summary.json"
+  },
+  {
+    "model": "old_A",
+    "samples": 40000,
+    "G": 627,
+    "FID": 24.75954324950243,
+    "Patch_FID": 26.10153623081021,
+    "CLIP": 31.565458297729492,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_milestones/summary.json"
+  },
+  {
+    "model": "old_A",
+    "samples": 50000,
+    "G": 784,
+    "FID": 24.20650454394604,
+    "Patch_FID": 25.455550160816244,
+    "CLIP": 31.5739688873291,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_milestones/summary.json"
+  },
+  {
+    "model": "old_A_no_middle_DM",
+    "samples": 20000,
+    "G": 313,
+    "FID": 22.22693537215946,
+    "Patch_FID": 24.821210516082772,
+    "CLIP": 31.54835319519043,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_no_middle_milestones/summary.json"
+  },
+  {
+    "model": "old_A_no_middle_DM",
+    "samples": 30000,
+    "G": 470,
+    "FID": 23.162640361437468,
+    "Patch_FID": 25.323732091401723,
+    "CLIP": 31.45996856689453,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_no_middle_milestones/summary.json"
+  },
+  {
+    "model": "old_A_no_middle_DM",
+    "samples": 40000,
+    "G": 627,
+    "FID": 22.86045235475592,
+    "Patch_FID": 24.586271997609288,
+    "CLIP": 31.576236724853516,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_no_middle_milestones/summary.json"
+  },
+  {
+    "model": "old_A_no_middle_DM",
+    "samples": 50000,
+    "G": 784,
+    "FID": 22.037978631622877,
+    "Patch_FID": 23.675989626412445,
+    "CLIP": 31.55054473876953,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "a50k_train60_20261124/coco_no_middle_milestones/summary.json"
+  },
+  {
+    "model": "clean_x0_A",
+    "samples": 20000,
+    "G": 313,
+    "FID": 23.480147621985452,
+    "Patch_FID": 28.68807706330597,
+    "CLIP": 31.911800384521484,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "A50K_clean_x0_20261125/coco_milestones/summary.json"
+  },
+  {
+    "model": "clean_x0_A",
+    "samples": 30000,
+    "G": 470,
+    "FID": 22.86595691487355,
+    "Patch_FID": 25.92664035759691,
+    "CLIP": 31.90866470336914,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "A50K_clean_x0_20261125/coco_milestones/summary.json"
+  },
+  {
+    "model": "clean_x0_A",
+    "samples": 40000,
+    "G": 627,
+    "FID": 23.400704066922117,
+    "Patch_FID": 25.950119345716644,
+    "CLIP": 31.79549789428711,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "A50K_clean_x0_20261125/coco_milestones/summary.json"
+  },
+  {
+    "model": "clean_x0_A",
+    "samples": 50000,
+    "G": 784,
+    "FID": 23.694525624100493,
+    "Patch_FID": 25.771802947284414,
+    "CLIP": 31.896976470947266,
+    "fid_n": 10000,
+    "clip_n": 1024,
+    "evidence": "A50K_clean_x0_20261125/coco_milestones/summary.json"
+  }
+]
